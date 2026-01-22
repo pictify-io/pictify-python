@@ -24,6 +24,10 @@ from pictify.types import (
     Template,
     TemplateVariable,
     ImageFormat,
+    HTMLRenderOptions,
+    GIFFrame,
+    GIFRenderOptions,
+    GIFRenderResult,
 )
 from pictify.errors import (
     PictifyError,
@@ -50,6 +54,10 @@ __all__ = [
     "Template",
     "TemplateVariable",
     "ImageFormat",
+    "HTMLRenderOptions",
+    "GIFFrame",
+    "GIFRenderOptions",
+    "GIFRenderResult",
     # Errors
     "PictifyError",
     "AuthenticationError",

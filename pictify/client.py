@@ -13,6 +13,8 @@ from pictify.errors import (
 from pictify.types import (
     BatchItem,
     BatchRenderResult,
+    GIFFrame,
+    GIFRenderResult,
     ImageFormat,
     RenderResult,
     Template,
@@ -272,6 +274,116 @@ class Pictify:
 
         response = self._request("POST", "/render/batch", json=payload)
         return BatchRenderResult.model_validate(response.json())
+
+    def render_html(
+        self,
+        html: str,
+        *,
+        css: Optional[str] = None,
+        format: ImageFormat = "png",
+        width: int = 1200,
+        height: int = 630,
+        device_scale_factor: float = 1.0,
+        transparent: bool = False,
+        quality: int = 90,
+        download: bool = False,
+    ) -> RenderResult:
+        """Render an image directly from HTML without using a template.
+
+        Args:
+            html: Raw HTML content to render.
+            css: Optional CSS to apply.
+            format: Output format (png, jpg, jpeg, webp, gif, pdf).
+            width: Output width in pixels.
+            height: Output height in pixels.
+            device_scale_factor: Scale factor for retina images.
+            transparent: Enable transparent background (PNG only).
+            quality: Quality for JPEG/WebP (1-100).
+            download: Whether to return image bytes instead of URL.
+
+        Returns:
+            RenderResult with image URL and metadata.
+        """
+        payload: Dict[str, Any] = {
+            "html": html,
+            "format": format,
+            "width": width,
+            "height": height,
+            "device_scale_factor": device_scale_factor,
+            "transparent": transparent,
+            "quality": quality,
+            "download": download,
+        }
+
+        if css is not None:
+            payload["css"] = css
+
+        response = self._request("POST", "/render/html", json=payload)
+        return RenderResult.model_validate(response.json())
+
+    def render_gif(
+        self,
+        frames: List[Dict[str, Any]],
+        *,
+        template_id: Optional[str] = None,
+        html: Optional[str] = None,
+        css: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        delay: int = 100,
+        loop: int = 0,
+        quality: int = 80,
+    ) -> GIFRenderResult:
+        """Render an animated GIF from a template or raw HTML.
+
+        Args:
+            frames: List of frame configurations with 'variables' or 'html' and optional 'delay'.
+            template_id: The ID of the template to use (if using template).
+            html: Raw HTML content to render (if not using template).
+            css: Optional CSS to apply (when using html).
+            width: Output width in pixels.
+            height: Output height in pixels.
+            delay: Delay between frames in milliseconds.
+            loop: Number of times to loop (0 = infinite).
+            quality: Quality (1-100).
+
+        Returns:
+            GIFRenderResult with GIF URL and metadata.
+        """
+        if not frames:
+            raise ValueError("At least one frame is required")
+        if len(frames) > 100:
+            raise ValueError("GIF cannot exceed 100 frames")
+
+        gif_frames = [
+            GIFFrame(
+                variables=frame.get("variables"),
+                html=frame.get("html"),
+                delay=frame.get("delay"),
+            )
+            for frame in frames
+        ]
+
+        payload: Dict[str, Any] = {
+            "frames": [f.model_dump(exclude_none=True) for f in gif_frames],
+            "delay": delay,
+            "loop": loop,
+            "quality": quality,
+        }
+
+        if template_id is not None:
+            payload["template_id"] = template_id
+        if html is not None:
+            payload["html"] = html
+        if css is not None:
+            payload["css"] = css
+        if width is not None:
+            payload["width"] = width
+        if height is not None:
+            payload["height"] = height
+
+        response = self._request("POST", "/render/gif", json=payload)
+        return GIFRenderResult.model_validate(response.json())
 
     def get_template(self, template_id: str) -> Template:
         """Get template information.
