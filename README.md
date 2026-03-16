@@ -79,6 +79,31 @@ with open("output.png", "wb") as f:
         f.write(chunk)
 ```
 
+### Layout Variants
+
+Templates can have multiple layout variants (e.g. landscape, square, story) created via AI Resize in the Pictify editor. You can render a specific layout or multiple layouts in a single call.
+
+```python
+# Render a single layout variant
+result = client.render(
+    template_id="your-template-id",
+    variables={"title": "Hello World"},
+    layout="twitter-post"
+)
+print(result.results[0].url)  # URL for the twitter-post variant
+
+# Render multiple layout variants at once
+result = client.render(
+    template_id="your-template-id",
+    variables={"title": "Hello World"},
+    layouts=["default", "twitter-post", "instagram-story"]
+)
+for item in result.results:
+    print(f"{item.layout}: {item.url} ({item.width}x{item.height})")
+```
+
+The render response always includes a `results` list of `RenderResultItem` objects, each containing `layout`, `url`, `width`, `height`, and `format`. For backward compatibility, `result.url` returns the URL of the first result.
+
 ### Batch Rendering
 
 ```python
@@ -92,8 +117,44 @@ result = client.render_batch(
     format="png"
 )
 
-for render in result.results:
-    print(render.image_url)
+# Each item contains a nested results list (one entry per layout)
+for item in result.results:
+    print(f"Item {item.index}: success={item.success}")
+    for r in item.results:
+        print(f"  {r.layout} ({r.width}x{r.height}): {r.url}")
+```
+
+#### Batch with layouts
+
+Pass `layout` for a single variant or `layouts` for multiple variants across all batch items:
+
+```python
+# Single layout for all batch items
+result = client.render_batch(
+    template_id="your-template-id",
+    items=[
+        {"variables": {"title": "Card 1"}},
+        {"variables": {"title": "Card 2"}},
+    ],
+    layout="twitter-post"
+)
+
+# Multiple layouts for all batch items
+result = client.render_batch(
+    template_id="your-template-id",
+    items=[
+        {"variables": {"title": "Card 1"}},
+        {"variables": {"title": "Card 2"}},
+    ],
+    layouts=["default", "twitter-post"]
+)
+
+# Access per-item, per-layout results
+for item in result.results:
+    for r in item.results:
+        print(f"Item {item.index} / {r.layout}: {r.url}")
+    for e in item.errors:
+        print(f"Item {item.index} / {e.layout} failed: {e.error}")
 ```
 
 ### Template Management
@@ -213,7 +274,7 @@ def og_image(request):
 ```python
 client = Pictify(
     api_key="your-api-key",
-    base_url="https://api.pictify.io/v1",  # Custom API URL
+    base_url="https://api.pictify.io",  # Custom API URL
     timeout=30.0,                           # Request timeout in seconds
     max_retries=3,                          # Max retry attempts
 )

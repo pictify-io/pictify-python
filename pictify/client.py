@@ -33,7 +33,7 @@ class Pictify:
         >>> print(result.image_url)
     """
 
-    DEFAULT_BASE_URL = "https://api.pictify.io/v1"
+    DEFAULT_BASE_URL = "https://api.pictify.io"
     DEFAULT_TIMEOUT = 30.0
     MAX_RETRIES = 3
     RETRY_DELAY = 1.0
@@ -143,6 +143,8 @@ class Pictify:
         device_scale_factor: float = 1.0,
         transparent: bool = False,
         quality: int = 90,
+        layout: Optional[str] = None,
+        layouts: Optional[List[str]] = None,
     ) -> RenderResult:
         """Render an image from a template.
 
@@ -156,6 +158,8 @@ class Pictify:
             device_scale_factor: Scale factor for retina images.
             transparent: Enable transparent background (PNG only).
             quality: Quality for JPEG/WebP (1-100).
+            layout: Single layout variant to render.
+            layouts: Multiple layout variants to render.
 
         Returns:
             RenderResult with image URL and metadata.
@@ -174,9 +178,56 @@ class Pictify:
             payload["width"] = width
         if height is not None:
             payload["height"] = height
+        if layout is not None:
+            payload["layout"] = layout
+        if layouts is not None:
+            payload["layouts"] = layouts
 
         response = self._request("POST", "/render", json=payload)
         return RenderResult.model_validate(response.json())
+
+    def render_layouts(
+        self,
+        template_id: str,
+        layouts: List[str],
+        variables: Optional[Dict[str, Any]] = None,
+        *,
+        format: ImageFormat = "png",
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        device_scale_factor: float = 1.0,
+        transparent: bool = False,
+        quality: int = 90,
+    ) -> RenderResult:
+        """Render multiple layout variants of a template in a single call.
+
+        Convenience method that wraps render() with the layouts parameter.
+
+        Args:
+            template_id: The ID of the template to render.
+            layouts: List of layout variant names to render.
+            variables: Variables to inject into the template.
+            format: Output format (png, jpg, jpeg, webp, gif, pdf).
+            width: Output width in pixels.
+            height: Output height in pixels.
+            device_scale_factor: Scale factor for retina images.
+            transparent: Enable transparent background (PNG only).
+            quality: Quality for JPEG/WebP (1-100).
+
+        Returns:
+            RenderResult with results array containing each layout variant.
+        """
+        return self.render(
+            template_id,
+            variables,
+            format=format,
+            width=width,
+            height=height,
+            device_scale_factor=device_scale_factor,
+            transparent=transparent,
+            quality=quality,
+            layouts=layouts,
+        )
 
     def render_stream(
         self,
@@ -240,6 +291,8 @@ class Pictify:
         format: ImageFormat = "png",
         width: Optional[int] = None,
         height: Optional[int] = None,
+        layout: Optional[str] = None,
+        layouts: Optional[List[str]] = None,
     ) -> BatchRenderResult:
         """Render multiple images in a batch.
 
@@ -249,6 +302,8 @@ class Pictify:
             format: Output format for all items.
             width: Output width for all items.
             height: Output height for all items.
+            layout: Layout variant to use for all batch items.
+            layouts: Array of layout variant names to render for all batch items.
 
         Returns:
             BatchRenderResult with individual results and summary.
@@ -271,6 +326,10 @@ class Pictify:
             payload["width"] = width
         if height is not None:
             payload["height"] = height
+        if layout is not None:
+            payload["layout"] = layout
+        if layouts is not None:
+            payload["layouts"] = layouts
 
         response = self._request("POST", "/render/batch", json=payload)
         return BatchRenderResult.model_validate(response.json())

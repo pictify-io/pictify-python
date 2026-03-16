@@ -18,8 +18,11 @@ from pictify.async_client import AsyncPictify
 from pictify.types import (
     RenderOptions,
     RenderResult,
+    RenderResultItem,
     BatchRenderOptions,
     BatchRenderResult,
+    BatchItemResult,
+    BatchItemError,
     BatchItem,
     Template,
     TemplateVariable,
@@ -48,8 +51,11 @@ __all__ = [
     # Types
     "RenderOptions",
     "RenderResult",
+    "RenderResultItem",
     "BatchRenderOptions",
     "BatchRenderResult",
+    "BatchItemResult",
+    "BatchItemError",
     "BatchItem",
     "Template",
     "TemplateVariable",

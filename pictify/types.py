@@ -26,6 +26,12 @@ class RenderOptions(BaseModel):
     )
     transparent: bool = Field(default=False, description="Transparent background (PNG only)")
     quality: int = Field(default=90, ge=1, le=100, description="Quality for JPEG/WebP")
+    layout: Optional[str] = Field(
+        default=None, description="Single layout variant to render"
+    )
+    layouts: Optional[List[str]] = Field(
+        default=None, description="Multiple layout variants to render"
+    )
 
 
 class BatchItem(BaseModel):
@@ -43,26 +49,104 @@ class BatchRenderOptions(BaseModel):
     format: ImageFormat = Field(default="png", description="Output format for all items")
     width: Optional[int] = Field(default=None, description="Output width for all items")
     height: Optional[int] = Field(default=None, description="Output height for all items")
+    layout: Optional[str] = Field(
+        default=None, description="Layout variant to use for all batch items"
+    )
+    layouts: Optional[List[str]] = Field(
+        default=None, description="Array of layout variant names to render for all batch items"
+    )
+
+
+class RenderResultItem(BaseModel):
+    """Individual result item when rendering with layout variants."""
+
+    layout: Optional[str] = Field(default=None, description="Layout variant name")
+    name: Optional[str] = Field(default=None, description="Display name for this variant")
+    url: Optional[str] = Field(default=None, description="URL of the rendered image")
+    width: Optional[int] = Field(default=None, description="Width of the rendered image")
+    height: Optional[int] = Field(default=None, description="Height of the rendered image")
+    format: Optional[ImageFormat] = Field(default=None, description="Format of the rendered image")
+    id: Optional[str] = Field(default=None, description="Unique ID for this render")
 
 
 class RenderResult(BaseModel):
-    """Result of a render operation."""
+    """Result of a render operation.
 
+    For single renders (no layouts), use `image_url` for backward compatibility.
+    For layout renders, iterate over `results` or use the `url` property for the first result.
+    """
+
+    # Legacy single-render fields
     image_url: Optional[str] = Field(
         default=None, description="URL of the generated image (if download was False)"
     )
-    render_id: str = Field(..., description="Unique render ID")
-    width: int = Field(..., description="Width of the generated image")
-    height: int = Field(..., description="Height of the generated image")
-    size: int = Field(..., description="File size in bytes")
-    format: ImageFormat = Field(..., description="Format of the generated image")
-    render_time: int = Field(..., description="Time taken to render in milliseconds")
+    render_id: Optional[str] = Field(default=None, description="Unique render ID")
+    width: Optional[int] = Field(default=None, description="Width of the generated image")
+    height: Optional[int] = Field(default=None, description="Height of the generated image")
+    size: Optional[int] = Field(default=None, description="File size in bytes")
+    format: Optional[ImageFormat] = Field(default=None, description="Format of the generated image")
+    render_time: Optional[int] = Field(
+        default=None, description="Time taken to render in milliseconds"
+    )
+
+    # Layout render fields
+    results: List[RenderResultItem] = Field(
+        default_factory=list, description="Array of rendered layout results"
+    )
+    errors: List[Dict[str, Any]] = Field(
+        default_factory=list, description="Array of errors from layout rendering"
+    )
+    total_layouts: Optional[int] = Field(
+        default=None, description="Total number of layout variants requested"
+    )
+    total_rendered: Optional[int] = Field(
+        default=None, description="Total number of successfully rendered layouts"
+    )
+    total_errors: Optional[int] = Field(
+        default=None, description="Total number of layout rendering errors"
+    )
+    template_uid: Optional[str] = Field(
+        default=None, description="Template UID used for the render"
+    )
+
+    @property
+    def url(self) -> Optional[str]:
+        """Return the URL of the first result for backward compatibility.
+
+        Falls back to image_url for non-layout renders.
+        """
+        if self.results:
+            return self.results[0].url
+        return self.image_url
+
+
+class BatchItemError(BaseModel):
+    """Error for a specific layout within a batch item."""
+
+    layout: Optional[str] = Field(default=None, description="Layout variant name that failed")
+    error: Optional[str] = Field(default=None, description="Error message")
+
+
+class BatchItemResult(BaseModel):
+    """Individual batch item result containing per-layout renders."""
+
+    index: int = Field(..., description="Zero-based index of this item in the batch")
+    success: bool = Field(..., description="Whether this batch item rendered successfully")
+    variables: List[str] = Field(
+        default_factory=list, description="Variable names used for this item"
+    )
+    results: List[RenderResultItem] = Field(
+        default_factory=list, description="Rendered images, one per requested layout"
+    )
+    errors: List[BatchItemError] = Field(
+        default_factory=list, description="Errors for layouts that failed to render for this item"
+    )
 
 
 class BatchRenderResult(BaseModel):
     """Result of a batch render operation."""
 
-    results: List[RenderResult] = Field(..., description="Array of individual render results")
+    results: List[BatchItemResult] = Field(..., description="Array of individual batch item results")
     total_time: int = Field(..., description="Total time taken for the batch")
     success_count: int = Field(..., description="Number of successful renders")
     failed_count: int = Field(..., description="Number of failed renders")
