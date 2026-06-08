@@ -1,4 +1,20 @@
-"""Custom exceptions for the Pictify SDK."""
+"""Custom exceptions for the Pictify SDK.
+
+There is no unified error envelope across the Pictify API: image/GIF endpoints
+return ``{"error", "code"}`` while template/CRUD endpoints return ``{"message"}``
+or ``{"message", "errors"}``. The SDK reads both keys.
+
+Error message precedence: ``body["error"] or body["message"] or status_text``.
+
+Status mapping (mirrors the Node SDK reference):
+    - 401 -> AuthenticationError
+    - 402 -> QuotaExceededError
+    - 404 -> TemplateNotFoundError
+    - 422 -> RenderError (validation; includes ``errors``)
+    - 429 -> QuotaExceededError when ``code == "quota_exceeded"``, else RateLimitError
+    - other 4xx -> RenderError
+    - 5xx -> ServerError
+"""
 
 from typing import Any, Dict, Optional
 
@@ -24,7 +40,7 @@ class PictifyError(Exception):
 
 
 class AuthenticationError(PictifyError):
-    """Raised when API key is invalid or missing."""
+    """Raised when the API key is invalid or missing (HTTP 401)."""
 
     def __init__(
         self,
@@ -36,21 +52,19 @@ class AuthenticationError(PictifyError):
 
 
 class TemplateNotFoundError(PictifyError):
-    """Raised when the specified template does not exist."""
+    """Raised when the specified template is not found (HTTP 404)."""
 
     def __init__(
         self,
-        template_id: str,
+        message: str = "Template not found",
         status_code: int = 404,
         response_body: Optional[Dict[str, Any]] = None,
     ) -> None:
-        message = f"Template not found: {template_id}"
         super().__init__(message, status_code, response_body)
-        self.template_id = template_id
 
 
 class RateLimitError(PictifyError):
-    """Raised when rate limit is exceeded."""
+    """Raised when the rate limit is exceeded (HTTP 429 without a quota code)."""
 
     def __init__(
         self,
@@ -64,11 +78,11 @@ class RateLimitError(PictifyError):
 
 
 class QuotaExceededError(PictifyError):
-    """Raised when account quota is exceeded."""
+    """Raised when the render quota is exceeded (HTTP 402, or 429 with a quota code)."""
 
     def __init__(
         self,
-        message: str = "Account quota exceeded",
+        message: str = "Render quota exceeded",
         status_code: int = 402,
         response_body: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -76,17 +90,31 @@ class QuotaExceededError(PictifyError):
 
 
 class RenderError(PictifyError):
-    """Raised when rendering fails."""
+    """Raised when a render or input validation fails (HTTP 422 and non-quota 4xx).
+
+    Carries field-level ``errors`` from the API when present (422 responses).
+    """
 
     def __init__(
         self,
         message: str = "Render failed",
-        status_code: int = 500,
+        status_code: int = 422,
         response_body: Optional[Dict[str, Any]] = None,
-        render_id: Optional[str] = None,
     ) -> None:
         super().__init__(message, status_code, response_body)
-        self.render_id = render_id
+        self.errors = (response_body or {}).get("errors")
+
+
+class ServerError(PictifyError):
+    """Raised when the server fails (HTTP 5xx)."""
+
+    def __init__(
+        self,
+        message: str = "Server error",
+        status_code: int = 500,
+        response_body: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message, status_code, response_body)
 
 
 class NetworkError(PictifyError):
@@ -117,22 +145,27 @@ def create_error_from_response(
     status_code: int,
     response_body: Optional[Dict[str, Any]] = None,
 ) -> PictifyError:
-    """Create appropriate error instance from HTTP response."""
+    """Map an HTTP error response to a typed :class:`PictifyError`.
+
+    Message precedence: ``body["error"] or body["message"] or "..."``.
+    """
     body = response_body or {}
-    message = body.get("message", body.get("error", "Unknown error"))
+    message = body.get("error") or body.get("message") or "An unexpected error occurred"
 
     if status_code == 401:
         return AuthenticationError(message, status_code, body)
-    elif status_code == 402:
+    if status_code == 402:
         return QuotaExceededError(message, status_code, body)
-    elif status_code == 404:
-        template_id = body.get("template_id", "unknown")
-        return TemplateNotFoundError(template_id, status_code, body)
-    elif status_code == 429:
-        retry_after = body.get("retry_after")
-        return RateLimitError(message, status_code, body, retry_after)
-    elif status_code >= 500:
-        render_id = body.get("render_id")
-        return RenderError(message, status_code, body, render_id)
-    else:
-        return PictifyError(message, status_code, body)
+    if status_code == 404:
+        return TemplateNotFoundError(message, status_code, body)
+    if status_code == 422:
+        return RenderError(message, status_code, body)
+    if status_code == 429:
+        if body.get("code") == "quota_exceeded":
+            return QuotaExceededError(message, status_code, body)
+        return RateLimitError(message, status_code, body, body.get("retry_after"))
+    if status_code >= 500:
+        return ServerError(message, status_code, body)
+    if status_code >= 400:
+        return RenderError(message, status_code, body)
+    return PictifyError(message, status_code, body)

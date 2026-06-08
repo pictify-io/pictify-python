@@ -1,7 +1,12 @@
-"""Synchronous Pictify client."""
+"""Synchronous Pictify client.
+
+Generate images, PDFs, and GIFs from raw HTML, live URLs, and reusable
+templates via the real Pictify API (https://api.pictify.io).
+"""
 
 import time
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -11,14 +16,25 @@ from pictify.errors import (
     create_error_from_response,
 )
 from pictify.types import (
-    BatchItem,
     BatchRenderResult,
-    GIFFrame,
-    GIFRenderResult,
+    BatchResults,
+    GifQuality,
+    GifRenderResult,
     ImageFormat,
+    ImageResult,
+    ListTemplatesResult,
     RenderResult,
     Template,
 )
+
+__all__ = ["Pictify"]
+
+SDK_VERSION = "1.0.0"
+
+
+def _strip_none(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop ``None`` fields so the backend applies its own defaults."""
+    return {k: v for k, v in body.items() if v is not None}
 
 
 class Pictify:
@@ -26,11 +42,8 @@ class Pictify:
 
     Example:
         >>> client = Pictify(api_key="your-api-key")
-        >>> result = client.render(
-        ...     template_id="your-template-id",
-        ...     variables={"title": "Hello World"}
-        ... )
-        >>> print(result.image_url)
+        >>> image = client.render_html(html="<div>Hello World</div>")
+        >>> print(image.url)
     """
 
     DEFAULT_BASE_URL = "https://api.pictify.io"
@@ -50,9 +63,9 @@ class Pictify:
 
         Args:
             api_key: Your Pictify API key.
-            base_url: Custom API base URL (optional).
+            base_url: Custom API base URL (default: https://api.pictify.io).
             timeout: Request timeout in seconds (default: 30).
-            max_retries: Maximum number of retries for failed requests (default: 3).
+            max_retries: Max retries for 5xx/network failures (default: 3).
         """
         self.api_key = api_key
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
@@ -64,7 +77,7 @@ class Pictify:
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "pictify-python/1.0.0",
+                "User-Agent": f"pictify-python/{SDK_VERSION}",
             },
             timeout=self.timeout,
         )
@@ -76,8 +89,12 @@ class Pictify:
         self.close()
 
     def close(self) -> None:
-        """Close the HTTP client."""
+        """Close the underlying HTTP client."""
         self._client.close()
+
+    # ------------------------------------------------------------------ #
+    # Internals
+    # ------------------------------------------------------------------ #
 
     def _request(
         self,
@@ -85,43 +102,26 @@ class Pictify:
         path: str,
         *,
         json: Optional[Dict[str, Any]] = None,
-        stream: bool = False,
-    ) -> httpx.Response:
-        """Make an HTTP request with retry logic."""
+    ) -> Any:
+        """Make an authenticated JSON request with retries on 5xx/network.
+
+        Retries ONLY on 5xx and network errors (never on 4xx). Returns the parsed
+        JSON body, or raises a typed :class:`PictifyError` on HTTP errors.
+        """
+        payload = _strip_none(json) if json is not None else None
         last_error: Optional[Exception] = None
 
         for attempt in range(self.max_retries + 1):
             try:
-                response = self._client.request(
-                    method,
-                    path,
-                    json=json,
-                )
-
-                if response.status_code >= 400:
-                    try:
-                        body = response.json()
-                    except Exception:
-                        body = {"message": response.text}
-
-                    # Retry on 5xx errors or rate limits
-                    if response.status_code >= 500 or response.status_code == 429:
-                        if attempt < self.max_retries:
-                            retry_after = body.get("retry_after", self.RETRY_DELAY * (2**attempt))
-                            time.sleep(retry_after)
-                            continue
-
-                    raise create_error_from_response(response.status_code, body)
-
-                return response
-
+                response = self._client.request(method, path, json=payload)
             except httpx.TimeoutException as e:
-                last_error = TimeoutError(f"Request timed out after {self.timeout}s", self.timeout)
+                last_error = TimeoutError(
+                    f"Request timed out after {self.timeout}s", self.timeout
+                )
                 if attempt < self.max_retries:
                     time.sleep(self.RETRY_DELAY * (2**attempt))
                     continue
                 raise last_error from e
-
             except httpx.RequestError as e:
                 last_error = NetworkError(str(e), e)
                 if attempt < self.max_retries:
@@ -129,351 +129,391 @@ class Pictify:
                     continue
                 raise last_error from e
 
-        raise last_error or NetworkError("Request failed after all retries")
+            # Retry on server errors only.
+            if response.status_code >= 500 and attempt < self.max_retries:
+                last_error = create_error_from_response(response.status_code, None)
+                time.sleep(self.RETRY_DELAY * (2**attempt))
+                continue
 
-    def render(
-        self,
-        template_id: str,
-        variables: Optional[Dict[str, Any]] = None,
-        *,
-        format: ImageFormat = "png",
-        width: Optional[int] = None,
-        height: Optional[int] = None,
-        download: bool = False,
-        device_scale_factor: float = 1.0,
-        transparent: bool = False,
-        quality: int = 90,
-        layout: Optional[str] = None,
-        layouts: Optional[List[str]] = None,
-    ) -> RenderResult:
-        """Render an image from a template.
-
-        Args:
-            template_id: The ID of the template to render.
-            variables: Variables to inject into the template.
-            format: Output format (png, jpg, jpeg, webp, gif, pdf).
-            width: Output width in pixels.
-            height: Output height in pixels.
-            download: Whether to return image bytes instead of URL.
-            device_scale_factor: Scale factor for retina images.
-            transparent: Enable transparent background (PNG only).
-            quality: Quality for JPEG/WebP (1-100).
-            layout: Single layout variant to render.
-            layouts: Multiple layout variants to render.
-
-        Returns:
-            RenderResult with image URL and metadata.
-        """
-        payload: Dict[str, Any] = {
-            "template_id": template_id,
-            "variables": variables or {},
-            "format": format,
-            "download": download,
-            "device_scale_factor": device_scale_factor,
-            "transparent": transparent,
-            "quality": quality,
-        }
-
-        if width is not None:
-            payload["width"] = width
-        if height is not None:
-            payload["height"] = height
-        if layout is not None:
-            payload["layout"] = layout
-        if layouts is not None:
-            payload["layouts"] = layouts
-
-        response = self._request("POST", "/render", json=payload)
-        return RenderResult.model_validate(response.json())
-
-    def render_layouts(
-        self,
-        template_id: str,
-        layouts: List[str],
-        variables: Optional[Dict[str, Any]] = None,
-        *,
-        format: ImageFormat = "png",
-        width: Optional[int] = None,
-        height: Optional[int] = None,
-        device_scale_factor: float = 1.0,
-        transparent: bool = False,
-        quality: int = 90,
-    ) -> RenderResult:
-        """Render multiple layout variants of a template in a single call.
-
-        Convenience method that wraps render() with the layouts parameter.
-
-        Args:
-            template_id: The ID of the template to render.
-            layouts: List of layout variant names to render.
-            variables: Variables to inject into the template.
-            format: Output format (png, jpg, jpeg, webp, gif, pdf).
-            width: Output width in pixels.
-            height: Output height in pixels.
-            device_scale_factor: Scale factor for retina images.
-            transparent: Enable transparent background (PNG only).
-            quality: Quality for JPEG/WebP (1-100).
-
-        Returns:
-            RenderResult with results array containing each layout variant.
-        """
-        return self.render(
-            template_id,
-            variables,
-            format=format,
-            width=width,
-            height=height,
-            device_scale_factor=device_scale_factor,
-            transparent=transparent,
-            quality=quality,
-            layouts=layouts,
-        )
-
-    def render_stream(
-        self,
-        template_id: str,
-        variables: Optional[Dict[str, Any]] = None,
-        *,
-        format: ImageFormat = "png",
-        width: Optional[int] = None,
-        height: Optional[int] = None,
-        device_scale_factor: float = 1.0,
-        transparent: bool = False,
-        quality: int = 90,
-    ) -> Iterator[bytes]:
-        """Render and stream image bytes.
-
-        Args:
-            template_id: The ID of the template to render.
-            variables: Variables to inject into the template.
-            format: Output format (png, jpg, jpeg, webp, gif, pdf).
-            width: Output width in pixels.
-            height: Output height in pixels.
-            device_scale_factor: Scale factor for retina images.
-            transparent: Enable transparent background (PNG only).
-            quality: Quality for JPEG/WebP (1-100).
-
-        Yields:
-            Chunks of image bytes.
-        """
-        payload: Dict[str, Any] = {
-            "template_id": template_id,
-            "variables": variables or {},
-            "format": format,
-            "stream": True,
-            "device_scale_factor": device_scale_factor,
-            "transparent": transparent,
-            "quality": quality,
-        }
-
-        if width is not None:
-            payload["width"] = width
-        if height is not None:
-            payload["height"] = height
-
-        with self._client.stream("POST", "/render/stream", json=payload) as response:
             if response.status_code >= 400:
-                response.read()
                 try:
                     body = response.json()
                 except Exception:
                     body = {"message": response.text}
                 raise create_error_from_response(response.status_code, body)
 
-            for chunk in response.iter_bytes():
-                yield chunk
+            try:
+                return response.json()
+            except Exception:
+                return None
 
-    def render_batch(
-        self,
-        template_id: str,
-        items: List[Dict[str, Any]],
-        *,
-        format: ImageFormat = "png",
-        width: Optional[int] = None,
-        height: Optional[int] = None,
-        layout: Optional[str] = None,
-        layouts: Optional[List[str]] = None,
-    ) -> BatchRenderResult:
-        """Render multiple images in a batch.
+        raise last_error or NetworkError("Request failed after all retries")
 
-        Args:
-            template_id: The ID of the template to use for all items.
-            items: List of items, each with 'variables' and optional 'filename'.
-            format: Output format for all items.
-            width: Output width for all items.
-            height: Output height for all items.
-            layout: Layout variant to use for all batch items.
-            layouts: Array of layout variant names to render for all batch items.
-
-        Returns:
-            BatchRenderResult with individual results and summary.
-        """
-        batch_items = [
-            BatchItem(
-                variables=item.get("variables", {}),
-                filename=item.get("filename"),
-            )
-            for item in items
-        ]
-
-        payload: Dict[str, Any] = {
-            "template_id": template_id,
-            "items": [item.model_dump() for item in batch_items],
-            "format": format,
-        }
-
-        if width is not None:
-            payload["width"] = width
-        if height is not None:
-            payload["height"] = height
-        if layout is not None:
-            payload["layout"] = layout
-        if layouts is not None:
-            payload["layouts"] = layouts
-
-        response = self._request("POST", "/render/batch", json=payload)
-        return BatchRenderResult.model_validate(response.json())
+    # ------------------------------------------------------------------ #
+    # Image rendering (POST /image)
+    # ------------------------------------------------------------------ #
 
     def render_html(
         self,
         html: str,
         *,
         css: Optional[str] = None,
-        format: ImageFormat = "png",
-        width: int = 1200,
-        height: int = 630,
-        device_scale_factor: float = 1.0,
-        transparent: bool = False,
-        quality: int = 90,
-        download: bool = False,
-    ) -> RenderResult:
-        """Render an image directly from HTML without using a template.
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        selector: Optional[str] = None,
+        format: Optional[ImageFormat] = None,
+    ) -> ImageResult:
+        """Render an image (or PDF) directly from HTML. ``POST /image``.
 
         Args:
             html: Raw HTML content to render.
-            css: Optional CSS to apply.
-            format: Output format (png, jpg, jpeg, webp, gif, pdf).
-            width: Output width in pixels.
-            height: Output height in pixels.
-            device_scale_factor: Scale factor for retina images.
-            transparent: Enable transparent background (PNG only).
-            quality: Quality for JPEG/WebP (1-100).
-            download: Whether to return image bytes instead of URL.
+            css: Optional CSS — inlined into a ``<style>`` tag before the HTML.
+            width: Output width in pixels (default: 1280).
+            height: Output height in pixels (default: 720).
+            selector: CSS selector to crop the screenshot to a specific element.
+            format: Output format, mapped to ``fileExtension`` (default: png).
 
         Returns:
-            RenderResult with image URL and metadata.
+            ImageResult with ``url``, ``id``, and ``created_at``.
         """
-        payload: Dict[str, Any] = {
-            "html": html,
-            "format": format,
-            "width": width,
-            "height": height,
-            "device_scale_factor": device_scale_factor,
-            "transparent": transparent,
-            "quality": quality,
-            "download": download,
-        }
+        if css:
+            html = f"<style>{css}</style>{html}"
 
-        if css is not None:
-            payload["css"] = css
+        data = self._request(
+            "POST",
+            "/image",
+            json={
+                "html": html,
+                "width": width,
+                "height": height,
+                "selector": selector,
+                "fileExtension": format or "png",
+            },
+        )
+        return ImageResult.model_validate(data)
 
-        response = self._request("POST", "/render/html", json=payload)
-        return RenderResult.model_validate(response.json())
+    def render_url(
+        self,
+        url: str,
+        *,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        selector: Optional[str] = None,
+        format: Optional[ImageFormat] = None,
+    ) -> ImageResult:
+        """Screenshot a live URL. ``POST /image`` with ``url``.
+
+        Args:
+            url: The URL to screenshot.
+            width: Output width in pixels (default: 1280).
+            height: Output height in pixels (default: 720).
+            selector: CSS selector to crop the screenshot to a specific element.
+            format: Output format, mapped to ``fileExtension`` (default: png).
+
+        Returns:
+            ImageResult with ``url``, ``id``, and ``created_at``.
+        """
+        data = self._request(
+            "POST",
+            "/image",
+            json={
+                "url": url,
+                "width": width,
+                "height": height,
+                "selector": selector,
+                "fileExtension": format or "png",
+            },
+        )
+        return ImageResult.model_validate(data)
+
+    # ------------------------------------------------------------------ #
+    # Template rendering (POST /templates/:uid/render)
+    # ------------------------------------------------------------------ #
+
+    def render(
+        self,
+        template_id: str,
+        *,
+        variables: Optional[Dict[str, Any]] = None,
+        format: Optional[ImageFormat] = None,
+        quality: Optional[float] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        layout: Optional[str] = None,
+        layouts: Optional[List[str]] = None,
+    ) -> RenderResult:
+        """Render a single image (or PDF) from a template.
+
+        ``POST /templates/:uid/render`` — returns the ``results[]`` envelope. Use
+        the ``result.url`` property for ``results[0].url``.
+
+        Args:
+            template_id: The UID of the template to render.
+            variables: Variables to inject into the template.
+            format: Output format (default: png; ``pdf`` is supported).
+            quality: Render quality for raster/JPEG output (0.1-1.0, default: 0.9).
+            width: Output width in pixels.
+            height: Output height in pixels.
+            layout: Render a single named layout variant.
+            layouts: Render multiple named layout variants (max 20).
+
+        Returns:
+            RenderResult with a ``results`` list and a ``url`` convenience property.
+        """
+        data = self._request(
+            "POST",
+            f"/templates/{quote(template_id, safe='')}/render",
+            json={
+                "variables": variables or {},
+                "format": format or "png",
+                "quality": quality,
+                "width": width,
+                "height": height,
+                "layout": layout,
+                "layouts": layouts,
+            },
+        )
+        return RenderResult.model_validate(data)
+
+    def render_layouts(
+        self,
+        template_id: str,
+        layouts: List[str],
+        *,
+        variables: Optional[Dict[str, Any]] = None,
+        format: Optional[ImageFormat] = None,
+        quality: Optional[float] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+    ) -> RenderResult:
+        """Render multiple layout variants of a template in a single call.
+
+        Convenience wrapper around :meth:`render` with ``layouts``.
+        ``POST /templates/:uid/render`` — one ``results[]`` item per successful
+        layout; missing/invalid layouts appear in ``errors[]``.
+
+        Args:
+            template_id: The UID of the template to render.
+            layouts: Layout variant names to render (max 20). Use ``default`` for base.
+            variables: Variables to inject into the template.
+            format: Output format (default: png).
+            quality: Render quality (0.1-1.0).
+            width: Output width in pixels.
+            height: Output height in pixels.
+
+        Returns:
+            RenderResult with one ``results`` item per rendered layout.
+        """
+        return self.render(
+            template_id,
+            variables=variables,
+            format=format,
+            quality=quality,
+            width=width,
+            height=height,
+            layouts=layouts,
+        )
+
+    # ------------------------------------------------------------------ #
+    # GIF rendering (POST /gif)
+    # ------------------------------------------------------------------ #
 
     def render_gif(
         self,
-        frames: List[Dict[str, Any]],
         *,
-        template_id: Optional[str] = None,
         html: Optional[str] = None,
-        css: Optional[str] = None,
+        url: Optional[str] = None,
+        template_id: Optional[str] = None,
+        variables: Optional[Dict[str, Any]] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
-        delay: int = 100,
-        loop: int = 0,
-        quality: int = 80,
-    ) -> GIFRenderResult:
-        """Render an animated GIF from a template or raw HTML.
+        quality: Optional[GifQuality] = None,
+    ) -> GifRenderResult:
+        """Render an animated GIF from raw HTML, a live URL, or a template.
+
+        ``POST /gif`` — the ``{gif: {...}}`` envelope is flattened to
+        ``{url, uid, width, height, animation_length}``. Provide exactly one
+        source: ``html``, ``url``, or ``template_id``.
 
         Args:
-            frames: List of frame configurations with 'variables' or 'html' and optional 'delay'.
-            template_id: The ID of the template to use (if using template).
-            html: Raw HTML content to render (if not using template).
-            css: Optional CSS to apply (when using html).
-            width: Output width in pixels.
-            height: Output height in pixels.
-            delay: Delay between frames in milliseconds.
-            loop: Number of times to loop (0 = infinite).
-            quality: Quality (1-100).
+            html: Raw HTML to render into a GIF (must contain CSS animation).
+            url: A live URL to capture motion from.
+            template_id: A template UID to render into a GIF.
+            variables: Variables to inject when using ``template_id``.
+            width: Output width in pixels (default: 800).
+            height: Output height in pixels (default: 600).
+            quality: Quality preset — ``low``, ``medium``, or ``high`` (default: medium).
 
         Returns:
-            GIFRenderResult with GIF URL and metadata.
+            GifRenderResult with the flattened GIF fields.
         """
-        if not frames:
-            raise ValueError("At least one frame is required")
-        if len(frames) > 100:
-            raise ValueError("GIF cannot exceed 100 frames")
-
-        gif_frames = [
-            GIFFrame(
-                variables=frame.get("variables"),
-                html=frame.get("html"),
-                delay=frame.get("delay"),
-            )
-            for frame in frames
-        ]
-
-        payload: Dict[str, Any] = {
-            "frames": [f.model_dump(exclude_none=True) for f in gif_frames],
-            "delay": delay,
-            "loop": loop,
-            "quality": quality,
+        body: Dict[str, Any] = {
+            "width": width,
+            "height": height,
+            "quality": quality or "medium",
         }
-
-        if template_id is not None:
-            payload["template_id"] = template_id
         if html is not None:
-            payload["html"] = html
-        if css is not None:
-            payload["css"] = css
-        if width is not None:
-            payload["width"] = width
-        if height is not None:
-            payload["height"] = height
+            body["html"] = html
+        if url is not None:
+            body["url"] = url
+        if template_id is not None:
+            body["template"] = template_id
+        if variables is not None:
+            body["variables"] = variables
 
-        response = self._request("POST", "/render/gif", json=payload)
-        return GIFRenderResult.model_validate(response.json())
+        data = self._request("POST", "/gif", json=body)
+        return GifRenderResult.model_validate((data or {}).get("gif", data))
 
-    def get_template(self, template_id: str) -> Template:
-        """Get template information.
+    # ------------------------------------------------------------------ #
+    # Batch rendering (async)
+    # ------------------------------------------------------------------ #
+
+    def render_batch(
+        self,
+        template_id: str,
+        variable_sets: List[Dict[str, Any]],
+        *,
+        format: Optional[ImageFormat] = None,
+        quality: Optional[float] = None,
+        concurrency: Optional[int] = None,
+        layout: Optional[str] = None,
+        layouts: Optional[List[str]] = None,
+    ) -> BatchRenderResult:
+        """Submit an async batch render of a template across many variable sets.
+
+        ``POST /templates/:uid/batch-render`` — returns ``{batch_id, status,
+        total_items}`` immediately (HTTP 202). Poll :meth:`get_batch_results` to
+        track progress. Rendered URLs are NOT returned by the poll endpoint — they
+        are delivered via the ``render.completed`` webhook.
 
         Args:
-            template_id: The ID of the template to retrieve.
+            template_id: The UID of the template to render.
+            variable_sets: Variable sets — one render per set (max 100).
+            format: Output format (default: png).
+            quality: Render quality (0.1-1.0, default: 0.9).
+            concurrency: Maximum parallel renders (1-10, default: 5).
+            layout: Render a single named layout variant for every item.
+            layouts: Render multiple named layout variants for every item (max 20).
+
+        Returns:
+            BatchRenderResult with ``batch_id``, ``status``, and ``total_items``.
+        """
+        data = self._request(
+            "POST",
+            f"/templates/{quote(template_id, safe='')}/batch-render",
+            json={
+                "variableSets": variable_sets,
+                "format": format or "png",
+                "quality": quality,
+                "concurrency": concurrency,
+                "layout": layout,
+                "layouts": layouts,
+            },
+        )
+        return BatchRenderResult.model_validate(data)
+
+    def get_batch_results(self, batch_id: str) -> BatchResults:
+        """Get the status, progress, and per-item results of a batch job.
+
+        ``GET /templates/batch/:batchId/results``. Per-item records carry
+        ``{index, success, variables}`` (and ``error`` on failures) but NOT
+        rendered URLs.
+
+        Args:
+            batch_id: The batch job ID returned by :meth:`render_batch`.
+
+        Returns:
+            BatchResults with status, progress, and per-item records.
+        """
+        data = self._request(
+            "GET",
+            f"/templates/batch/{quote(batch_id, safe='')}/results",
+        )
+        return BatchResults.model_validate(data)
+
+    # ------------------------------------------------------------------ #
+    # Template CRUD
+    # ------------------------------------------------------------------ #
+
+    def get_template(self, template_id: str) -> Template:
+        """Get a single template by its UID. ``GET /templates/:uid``.
+
+        Unwraps the ``{template}`` envelope.
+
+        Args:
+            template_id: The UID of the template to retrieve.
 
         Returns:
             Template with metadata and variable definitions.
         """
-        response = self._request("GET", f"/templates/{template_id}")
-        return Template.model_validate(response.json())
+        data = self._request("GET", f"/templates/{quote(template_id, safe='')}")
+        return Template.model_validate((data or {}).get("template", data))
 
     def list_templates(
         self,
         *,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> List[Template]:
-        """List all templates.
+        page: Optional[int] = None,
+        limit: Optional[int] = None,
+        sort: Optional[str] = None,
+    ) -> ListTemplatesResult:
+        """List templates in your account. ``GET /templates``.
 
         Args:
-            limit: Maximum number of templates to return.
-            offset: Number of templates to skip.
+            page: Page number (1-based, default: 1).
+            limit: Items per page (max 100, default: 12).
+            sort: Sort order (``newest`` | ``oldest`` | ``name``).
 
         Returns:
-            List of templates.
+            ListTemplatesResult with ``templates`` and ``pagination``.
         """
-        response = self._request(
-            "GET",
-            f"/templates?limit={limit}&offset={offset}",
+        params: Dict[str, Any] = {}
+        if page is not None:
+            params["page"] = page
+        if limit is not None:
+            params["limit"] = limit
+        if sort is not None:
+            params["sort"] = sort
+        query = f"?{urlencode(params)}" if params else ""
+
+        data = self._request("GET", f"/templates{query}")
+        return ListTemplatesResult.model_validate(data)
+
+    def create_template(
+        self,
+        html: str,
+        *,
+        name: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        variable_definitions: Optional[List[Dict[str, Any]]] = None,
+        output_format: Optional[str] = None,
+    ) -> Template:
+        """Create a template from HTML. ``POST /templates``.
+
+        Variables are auto-discovered from ``{{variableName}}`` tokens in the HTML.
+        Unwraps the ``{template}`` envelope.
+
+        Args:
+            html: Raw HTML body.
+            name: Template name.
+            width: Default width in pixels.
+            height: Default height in pixels.
+            variable_definitions: Explicit variable definitions (auto-extracted when omitted).
+            output_format: Output format (``image`` | ``pdf``, default: image).
+
+        Returns:
+            The created Template.
+        """
+        data = self._request(
+            "POST",
+            "/templates",
+            json={
+                "html": html,
+                "name": name,
+                "width": width,
+                "height": height,
+                "variableDefinitions": variable_definitions,
+                "outputFormat": output_format,
+            },
         )
-        data = response.json()
-        return [Template.model_validate(t) for t in data.get("templates", [])]
+        return Template.model_validate((data or {}).get("template", data))

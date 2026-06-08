@@ -1,17 +1,11 @@
 # Pictify Python SDK
 
-Official Python SDK for [Pictify](https://pictify.io) - Generate images from HTML templates.
+Official Python SDK for [Pictify](https://pictify.io) — generate images, PDFs, and GIFs from raw HTML, live URLs, and reusable templates.
 
 ## Installation
 
 ```bash
 pip install pictify
-```
-
-For async support:
-
-```bash
-pip install pictify[async]
 ```
 
 ## Quick Start
@@ -21,16 +15,13 @@ from pictify import Pictify
 
 client = Pictify(api_key="your-api-key")
 
-# Render an image
-result = client.render(
-    template_id="your-template-id",
-    variables={
-        "title": "Hello World",
-        "subtitle": "Generated with Pictify"
-    }
-)
+# Render raw HTML to a PNG
+image = client.render_html(html="<div style='font-size:48px;padding:40px'>Hello World</div>")
+print(image.url)
 
-print(result.image_url)
+# Render a reusable template
+result = client.render("your-template-uid", variables={"name": "Ada", "company": "Pictify"})
+print(result.url)  # results[0].url
 ```
 
 ## Async Usage
@@ -41,134 +32,180 @@ from pictify import AsyncPictify
 
 async def main():
     async with AsyncPictify(api_key="your-api-key") as client:
-        result = await client.render(
-            template_id="your-template-id",
-            variables={"title": "Hello World"}
-        )
-        print(result.image_url)
+        image = await client.render_html(html="<div>Hello World</div>")
+        print(image.url)
 
 asyncio.run(main())
 ```
 
 ## Features
 
-### Render Options
+- **Sync + async clients** — `Pictify` and `AsyncPictify`, identical surface
+- **Full type hints** — Pydantic result models with snake_case attributes
+- **Automatic retries** — exponential backoff on 5xx and network errors
+- **Typed errors** — `AuthenticationError`, `RateLimitError`, `QuotaExceededError`, and more
+- **Templates, HTML, URLs & GIFs** — one client for every render type
+- **Async batch rendering** — submit large jobs and poll for progress
+
+## Configuration
+
+```python
+client = Pictify(
+    api_key="your-api-key",
+    base_url="https://api.pictify.io",  # optional: API base URL
+    timeout=30.0,                       # optional: request timeout in seconds (default: 30)
+    max_retries=3,                      # optional: retries on 5xx/network errors (default: 3)
+)
+```
+
+Both clients are context managers and expose `close()`:
+
+```python
+with Pictify(api_key="your-api-key") as client:
+    ...
+
+async with AsyncPictify(api_key="your-api-key") as client:
+    ...
+```
+
+## API Reference
+
+### `render_html(html, *, css=None, width=None, height=None, selector=None, format=None)`
+
+Render an image (or PDF) directly from HTML. `POST /image`.
+
+```python
+image = client.render_html(
+    html="<div style='padding:40px'>Hello</div>",
+    css="div { color: blue; }",   # optional — inlined into a <style> tag
+    width=1200,                    # optional (default: 1280)
+    height=630,                    # optional (default: 720)
+    selector="#card",             # optional — crop to a specific element
+    format="png",                 # optional: 'png' | 'jpg' | 'jpeg' | 'webp' | 'pdf' (default: png)
+)
+print(image.url, image.id, image.created_at)
+```
+
+### `render_url(url, *, width=None, height=None, selector=None, format=None)`
+
+Screenshot a live URL. `POST /image` with `url`.
+
+```python
+image = client.render_url(url="https://example.com", width=1280, height=720)
+print(image.url)
+```
+
+### `render(template_id, *, variables=None, format=None, quality=None, width=None, height=None, layout=None, layouts=None)`
+
+Render a single image (or PDF) from a template. `POST /templates/:uid/render`.
+
+The response is a `results` envelope; `result.url` is a convenience accessor for `results[0].url`.
 
 ```python
 result = client.render(
-    template_id="your-template-id",
-    variables={"title": "Hello World"},
-    format="png",           # png, jpg, jpeg, webp, gif, pdf
-    width=1200,             # Output width
-    height=630,             # Output height
-    device_scale_factor=2,  # Retina images
-    transparent=True,       # Transparent background (PNG only)
-    quality=90,             # JPEG/WebP quality (1-100)
+    "template-uid",
+    variables={"title": "My Post", "author": "Ada"},
+    format="png",   # optional: 'png' | 'jpg' | 'jpeg' | 'webp' | 'pdf' (default: png)
+    quality=0.9,    # optional render quality, 0.1-1.0 (default: 0.9)
+    width=1200,     # optional
+    height=630,     # optional
 )
+print(result.url)
+print(result.results[0])  # RenderResultItem: layout, url, width, height, format, name, id, created_at
 ```
 
-### Stream Response
+### `render_layouts(template_id, layouts, *, variables=None, format=None, quality=None, width=None, height=None)`
+
+Render multiple layout variants of a template in one call (max 20). `POST /templates/:uid/render` with `layouts`.
+
+Each successful layout appears in `results`; missing/invalid layouts appear in `errors`.
 
 ```python
-# Stream image bytes directly
-with open("output.png", "wb") as f:
-    for chunk in client.render_stream(
-        template_id="your-template-id",
-        variables={"title": "Hello World"}
-    ):
-        f.write(chunk)
-```
-
-### Layout Variants
-
-Templates can have multiple layout variants (e.g. landscape, square, story) created via AI Resize in the Pictify editor. You can render a specific layout or multiple layouts in a single call.
-
-```python
-# Render a single layout variant
-result = client.render(
-    template_id="your-template-id",
-    variables={"title": "Hello World"},
-    layout="twitter-post"
-)
-print(result.results[0].url)  # URL for the twitter-post variant
-
-# Render multiple layout variants at once
-result = client.render(
-    template_id="your-template-id",
-    variables={"title": "Hello World"},
-    layouts=["default", "twitter-post", "instagram-story"]
+result = client.render_layouts(
+    "template-uid",
+    layouts=["default", "square", "story"],
+    variables={"title": "Hello"},
 )
 for item in result.results:
-    print(f"{item.layout}: {item.url} ({item.width}x{item.height})")
+    print(item.layout, item.url, f"{item.width}x{item.height}")
+for err in result.errors:
+    print("failed:", err.layout, err.error)
 ```
 
-The render response always includes a `results` list of `RenderResultItem` objects, each containing `layout`, `url`, `width`, `height`, and `format`. For backward compatibility, `result.url` returns the URL of the first result.
+### `render_gif(*, html=None, url=None, template_id=None, variables=None, width=None, height=None, quality=None)`
 
-### Batch Rendering
+Render an animated GIF from raw HTML, a live URL, or a template. `POST /gif`.
+
+Provide exactly one source: `html`, `url`, or `template_id`. The `{gif: {...}}` envelope is flattened.
 
 ```python
-result = client.render_batch(
-    template_id="your-template-id",
-    items=[
-        {"variables": {"title": "Image 1"}},
-        {"variables": {"title": "Image 2"}},
-        {"variables": {"title": "Image 3"}},
-    ],
-    format="png"
+gif = client.render_gif(
+    html="<style>@keyframes p{...}</style><div class='anim'>Hi</div>",
+    width=400,     # optional (default: 800)
+    height=200,    # optional (default: 600)
+    quality="medium",  # optional: 'low' | 'medium' | 'high' (default: medium)
 )
-
-# Each item contains a nested results list (one entry per layout)
-for item in result.results:
-    print(f"Item {item.index}: success={item.success}")
-    for r in item.results:
-        print(f"  {r.layout} ({r.width}x{r.height}): {r.url}")
+print(gif.url, gif.uid, gif.animation_length)
 ```
 
-#### Batch with layouts
+### `render_batch(template_id, variable_sets, *, format=None, quality=None, concurrency=None, layout=None, layouts=None)`
 
-Pass `layout` for a single variant or `layouts` for multiple variants across all batch items:
+Submit an **async** batch render of a template across many variable sets (max 100). `POST /templates/:uid/batch-render`.
+
+Returns immediately (HTTP 202) with a `batch_id`. Poll `get_batch_results` for progress. Rendered URLs are delivered via the `render.completed` webhook — they are **not** returned by the poll endpoint.
 
 ```python
-# Single layout for all batch items
-result = client.render_batch(
-    template_id="your-template-id",
-    items=[
-        {"variables": {"title": "Card 1"}},
-        {"variables": {"title": "Card 2"}},
-    ],
-    layout="twitter-post"
+job = client.render_batch(
+    "template-uid",
+    variable_sets=[{"name": p["name"], "price": p["price"]} for p in products],
 )
-
-# Multiple layouts for all batch items
-result = client.render_batch(
-    template_id="your-template-id",
-    items=[
-        {"variables": {"title": "Card 1"}},
-        {"variables": {"title": "Card 2"}},
-    ],
-    layouts=["default", "twitter-post"]
-)
-
-# Access per-item, per-layout results
-for item in result.results:
-    for r in item.results:
-        print(f"Item {item.index} / {r.layout}: {r.url}")
-    for e in item.errors:
-        print(f"Item {item.index} / {e.layout} failed: {e.error}")
+print(job.batch_id, job.status, job.total_items)
 ```
 
-### Template Management
+### `get_batch_results(batch_id)`
+
+Get the status, progress, and per-item results of a batch job. `GET /templates/batch/:batchId/results`.
 
 ```python
-# Get template details
-template = client.get_template("your-template-id")
-print(f"Template: {template.name}")
-print(f"Variables: {[v.name for v in template.variables]}")
+status = client.get_batch_results(job.batch_id)
+print(status.status, status.completed_items, "/", status.total_items)
+for item in status.results:
+    print(item.index, item.success, item.variables)  # no URLs (see webhook)
+```
 
-# List all templates
-templates = client.list_templates(limit=10)
-for t in templates:
-    print(f"{t.id}: {t.name}")
+### `get_template(template_id)`
+
+Get a single template by its UID. `GET /templates/:uid`.
+
+```python
+template = client.get_template("template-uid")
+print(template.uid, template.name)
+print([v.name for v in (template.variable_definitions or [])])
+```
+
+### `list_templates(*, page=None, limit=None, sort=None)`
+
+List templates in your account. `GET /templates`.
+
+```python
+result = client.list_templates(page=1, limit=20, sort="newest")
+for t in result.templates:
+    print(t.uid, t.name)
+print(result.pagination.total, result.pagination.has_next)
+```
+
+### `create_template(html, *, name=None, width=None, height=None, variable_definitions=None, output_format=None)`
+
+Create a template from HTML. Variables are auto-discovered from `{{variableName}}` tokens. `POST /templates`.
+
+```python
+template = client.create_template(
+    html="<div>Hi {{first_name}}</div>",
+    name="Welcome Card",
+    width=600,
+    height=200,
+)
+print(template.uid)
 ```
 
 ## Error Handling
@@ -182,116 +219,49 @@ from pictify import (
     RateLimitError,
     QuotaExceededError,
     RenderError,
+    ServerError,
 )
 
 client = Pictify(api_key="your-api-key")
 
 try:
-    result = client.render(
-        template_id="your-template-id",
-        variables={"title": "Hello World"}
-    )
+    result = client.render("template-uid", variables={"title": "Hello World"})
 except AuthenticationError:
     print("Invalid API key")
-except TemplateNotFoundError as e:
-    print(f"Template not found: {e.template_id}")
+except TemplateNotFoundError:
+    print("Template not found")
 except RateLimitError as e:
     print(f"Rate limited. Retry after: {e.retry_after}s")
 except QuotaExceededError:
-    print("Account quota exceeded")
+    print("Render quota exceeded")
 except RenderError as e:
-    print(f"Render failed: {e.message}")
+    print(f"Render/validation failed: {e.message}; field errors: {e.errors}")
+except ServerError as e:
+    print(f"Server error: {e.message}")
 except PictifyError as e:
     print(f"Error: {e.message}")
 ```
 
-## Framework Examples
-
-### Flask
-
-```python
-from flask import Flask, Response
-from pictify import Pictify
-
-app = Flask(__name__)
-client = Pictify(api_key="your-api-key")
-
-@app.route("/og-image")
-def og_image():
-    def generate():
-        for chunk in client.render_stream(
-            template_id="your-template-id",
-            variables={"title": "Dynamic OG Image"}
-        ):
-            yield chunk
-
-    return Response(generate(), mimetype="image/png")
-```
-
-### FastAPI
-
-```python
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
-from pictify import AsyncPictify
-
-app = FastAPI()
-client = AsyncPictify(api_key="your-api-key")
-
-@app.get("/og-image")
-async def og_image():
-    async def generate():
-        async for chunk in client.render_stream(
-            template_id="your-template-id",
-            variables={"title": "Dynamic OG Image"}
-        ):
-            yield chunk
-
-    return StreamingResponse(generate(), media_type="image/png")
-```
-
-### Django
-
-```python
-from django.http import StreamingHttpResponse
-from pictify import Pictify
-
-client = Pictify(api_key="your-api-key")
-
-def og_image(request):
-    def generate():
-        for chunk in client.render_stream(
-            template_id="your-template-id",
-            variables={"title": request.GET.get("title", "Hello")}
-        ):
-            yield chunk
-
-    return StreamingHttpResponse(generate(), content_type="image/png")
-```
-
-## Configuration
-
-```python
-client = Pictify(
-    api_key="your-api-key",
-    base_url="https://api.pictify.io",  # Custom API URL
-    timeout=30.0,                           # Request timeout in seconds
-    max_retries=3,                          # Max retry attempts
-)
-```
+Status → error mapping: `401 → AuthenticationError`, `402 → QuotaExceededError`, `404 → TemplateNotFoundError`, `422 → RenderError` (with field-level `errors`), `429 → QuotaExceededError` when `code == "quota_exceeded"` else `RateLimitError`, other 4xx → `RenderError`, `5xx → ServerError`. Only 5xx and network errors are retried.
 
 ## Type Hints
 
-The SDK includes full type hints for all methods and classes:
+The SDK ships full type hints and Pydantic result models:
 
 ```python
 from pictify import (
     Pictify,
-    RenderOptions,
+    AsyncPictify,
+    ImageResult,
     RenderResult,
+    RenderResultItem,
+    GifRenderResult,
+    BatchRenderResult,
+    BatchResults,
     Template,
-    TemplateVariable,
+    ListTemplatesResult,
     ImageFormat,
+    GifQuality,
 )
 ```
 

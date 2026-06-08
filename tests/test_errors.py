@@ -1,23 +1,20 @@
-"""Tests for Pictify error classes."""
-
-import pytest
+"""Unit tests for Pictify error classes and the response -> error mapping."""
 
 from pictify.errors import (
-    PictifyError,
     AuthenticationError,
-    TemplateNotFoundError,
-    RateLimitError,
-    QuotaExceededError,
-    RenderError,
     NetworkError,
+    PictifyError,
+    QuotaExceededError,
+    RateLimitError,
+    RenderError,
+    ServerError,
+    TemplateNotFoundError,
     TimeoutError,
     create_error_from_response,
 )
 
 
 class TestPictifyError:
-    """Tests for base PictifyError class."""
-
     def test_creates_error_with_message(self):
         error = PictifyError("Test error")
         assert str(error) == "Test error"
@@ -34,157 +31,129 @@ class TestPictifyError:
         assert error.response_body == body
 
     def test_inherits_from_exception(self):
-        error = PictifyError("Test")
-        assert isinstance(error, Exception)
+        assert isinstance(PictifyError("Test"), Exception)
 
 
-class TestAuthenticationError:
-    """Tests for AuthenticationError class."""
-
-    def test_default_message(self):
+class TestTypedErrors:
+    def test_authentication_default(self):
         error = AuthenticationError()
         assert error.message == "Invalid or missing API key"
         assert error.status_code == 401
-
-    def test_custom_message(self):
-        error = AuthenticationError("Custom auth error")
-        assert error.message == "Custom auth error"
-
-    def test_inherits_from_pictify_error(self):
-        error = AuthenticationError()
         assert isinstance(error, PictifyError)
 
-
-class TestTemplateNotFoundError:
-    """Tests for TemplateNotFoundError class."""
-
-    def test_creates_error_with_template_id(self):
-        error = TemplateNotFoundError("tmpl_123")
-        assert error.message == "Template not found: tmpl_123"
-        assert error.template_id == "tmpl_123"
+    def test_template_not_found_default(self):
+        error = TemplateNotFoundError()
+        assert error.message == "Template not found"
         assert error.status_code == 404
-
-    def test_inherits_from_pictify_error(self):
-        error = TemplateNotFoundError("tmpl_123")
         assert isinstance(error, PictifyError)
 
-
-class TestRateLimitError:
-    """Tests for RateLimitError class."""
-
-    def test_default_values(self):
+    def test_rate_limit_default(self):
         error = RateLimitError()
         assert error.message == "Rate limit exceeded"
         assert error.status_code == 429
         assert error.retry_after is None
 
-    def test_stores_retry_after(self):
+    def test_rate_limit_stores_retry_after(self):
         error = RateLimitError("Too many requests", retry_after=60)
         assert error.retry_after == 60
 
-
-class TestQuotaExceededError:
-    """Tests for QuotaExceededError class."""
-
-    def test_default_message(self):
+    def test_quota_default(self):
         error = QuotaExceededError()
-        assert error.message == "Account quota exceeded"
+        assert error.message == "Render quota exceeded"
         assert error.status_code == 402
 
-
-class TestRenderError:
-    """Tests for RenderError class."""
-
-    def test_default_values(self):
+    def test_render_default_is_422(self):
         error = RenderError()
         assert error.message == "Render failed"
+        assert error.status_code == 422
+        assert error.errors is None
+
+    def test_render_carries_field_errors(self):
+        error = RenderError("bad", 422, {"errors": [{"field": "name"}]})
+        assert error.errors == [{"field": "name"}]
+
+    def test_server_default(self):
+        error = ServerError()
         assert error.status_code == 500
-        assert error.render_id is None
+        assert isinstance(error, PictifyError)
 
-    def test_stores_render_id(self):
-        error = RenderError("Failed", render_id="render_123")
-        assert error.render_id == "render_123"
-
-
-class TestNetworkError:
-    """Tests for NetworkError class."""
-
-    def test_default_message(self):
+    def test_network_default(self):
         error = NetworkError()
         assert error.message == "Network error occurred"
         assert error.status_code is None
 
-    def test_stores_original_error(self):
+    def test_network_stores_original_error(self):
         original = Exception("Connection refused")
         error = NetworkError("Network failed", original_error=original)
         assert error.original_error == original
 
-
-class TestTimeoutError:
-    """Tests for TimeoutError class."""
-
-    def test_default_message(self):
+    def test_timeout_default(self):
         error = TimeoutError()
         assert error.message == "Request timed out"
         assert error.timeout is None
 
-    def test_stores_timeout_value(self):
+    def test_timeout_stores_value(self):
         error = TimeoutError("Timeout after 30s", timeout=30.0)
         assert error.timeout == 30.0
 
 
 class TestCreateErrorFromResponse:
-    """Tests for create_error_from_response function."""
-
-    def test_returns_authentication_error_for_401(self):
-        error = create_error_from_response(401, {"message": "Invalid key"})
+    def test_401_authentication(self):
+        error = create_error_from_response(401, {"message": "Invalid Request"})
         assert isinstance(error, AuthenticationError)
-        assert error.message == "Invalid key"
+        assert error.message == "Invalid Request"
 
-    def test_returns_quota_exceeded_for_402(self):
+    def test_402_quota(self):
         error = create_error_from_response(402, {"message": "Quota exceeded"})
         assert isinstance(error, QuotaExceededError)
-        assert error.message == "Quota exceeded"
 
-    def test_returns_template_not_found_for_404(self):
-        error = create_error_from_response(404, {"message": "Not found", "template_id": "tmpl_123"})
+    def test_404_template_not_found(self):
+        error = create_error_from_response(404, {"message": "Template not found"})
         assert isinstance(error, TemplateNotFoundError)
-        assert error.template_id == "tmpl_123"
 
-    def test_returns_rate_limit_error_for_429(self):
-        error = create_error_from_response(429, {"message": "Too many requests", "retry_after": 60})
+    def test_422_render_with_errors(self):
+        error = create_error_from_response(
+            422, {"message": "Validation failed", "errors": [{"field": "name"}]}
+        )
+        assert isinstance(error, RenderError)
+        assert error.errors == [{"field": "name"}]
+
+    def test_429_quota_code_is_quota(self):
+        error = create_error_from_response(429, {"message": "limit", "code": "quota_exceeded"})
+        assert isinstance(error, QuotaExceededError)
+        assert error.status_code == 429
+
+    def test_429_without_quota_code_is_rate_limit(self):
+        error = create_error_from_response(429, {"message": "slow down"})
         assert isinstance(error, RateLimitError)
-        assert error.retry_after == 60
 
-    def test_returns_render_error_for_500(self):
-        error = create_error_from_response(500, {"message": "Server error"})
-        assert isinstance(error, RenderError)
+    def test_5xx_is_server_error(self):
+        for status in (500, 502, 503, 504):
+            assert isinstance(create_error_from_response(status, {"message": "x"}), ServerError)
 
-    def test_returns_render_error_for_502(self):
-        error = create_error_from_response(502, {"message": "Bad gateway"})
-        assert isinstance(error, RenderError)
+    def test_other_4xx_is_render_error(self):
+        # Per the Node reference, ALL non-mapped 4xx (incl. 400, 418) -> RenderError.
+        for status in (400, 403, 418):
+            assert isinstance(create_error_from_response(status, {"error": "x"}), RenderError)
 
-    def test_returns_render_error_for_503(self):
-        error = create_error_from_response(503, {"message": "Unavailable"})
-        assert isinstance(error, RenderError)
-
-    def test_returns_render_error_for_504(self):
-        error = create_error_from_response(504, {"message": "Gateway timeout"})
-        assert isinstance(error, RenderError)
-
-    def test_returns_generic_error_for_unknown_status(self):
-        error = create_error_from_response(418, {"message": "I'm a teapot"})
+    def test_non_http_error_status_is_base_error(self):
+        # A status below 400 (shouldn't occur as an error) falls through to the base type.
+        error = create_error_from_response(399, {"message": "weird"})
         assert isinstance(error, PictifyError)
-        assert not isinstance(error, (AuthenticationError, RenderError))
+        assert not isinstance(error, (AuthenticationError, RenderError, ServerError))
 
-    def test_uses_default_message_when_none_provided(self):
+    def test_message_precedence_error_over_message(self):
+        error = create_error_from_response(422, {"error": "E", "message": "M"})
+        assert error.message == "E"
+
+    def test_falls_back_to_message_when_no_error_key(self):
+        error = create_error_from_response(422, {"message": "M"})
+        assert error.message == "M"
+
+    def test_default_message_when_empty(self):
         error = create_error_from_response(500, {})
-        assert error.message == "Unknown error"
+        assert error.message == "An unexpected error occurred"
 
-    def test_handles_error_field_as_message(self):
-        error = create_error_from_response(500, {"error": "Something went wrong"})
-        assert error.message == "Something went wrong"
-
-    def test_handles_none_response_body(self):
+    def test_handles_none_body(self):
         error = create_error_from_response(500, None)
-        assert error.message == "Unknown error"
+        assert error.message == "An unexpected error occurred"
