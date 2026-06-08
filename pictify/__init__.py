@@ -1,46 +1,43 @@
-"""
-Pictify Python SDK
+"""Pictify Python SDK.
 
-Official SDK for generating images from HTML templates using the Pictify API.
+Official SDK for generating images, PDFs, and GIFs from raw HTML, live URLs,
+and reusable templates via the Pictify API.
 
 Example:
     >>> from pictify import Pictify
     >>> client = Pictify(api_key="your-api-key")
-    >>> result = client.render(
-    ...     template_id="your-template-id",
-    ...     variables={"title": "Hello World"}
-    ... )
-    >>> print(result.image_url)
+    >>> image = client.render_html(html="<div>Hello World</div>")
+    >>> print(image.url)
 """
 
-from pictify.client import Pictify
 from pictify.async_client import AsyncPictify
+from pictify.client import Pictify
+from pictify.errors import (
+    AuthenticationError,
+    NetworkError,
+    PictifyError,
+    QuotaExceededError,
+    RateLimitError,
+    RenderError,
+    ServerError,
+    TemplateNotFoundError,
+    TimeoutError,
+)
 from pictify.types import (
-    RenderOptions,
+    BatchItemStatus,
+    BatchRenderResult,
+    BatchResults,
+    GifQuality,
+    GifRenderResult,
+    ImageFormat,
+    ImageResult,
+    ListTemplatesResult,
+    Pagination,
+    RenderErrorEntry,
     RenderResult,
     RenderResultItem,
-    BatchRenderOptions,
-    BatchRenderResult,
-    BatchItemResult,
-    BatchItemError,
-    BatchItem,
     Template,
-    TemplateVariable,
-    ImageFormat,
-    HTMLRenderOptions,
-    GIFFrame,
-    GIFRenderOptions,
-    GIFRenderResult,
-)
-from pictify.errors import (
-    PictifyError,
-    AuthenticationError,
-    TemplateNotFoundError,
-    RateLimitError,
-    QuotaExceededError,
-    RenderError,
-    NetworkError,
-    TimeoutError,
+    TemplateVariableDefinition,
 )
 
 __version__ = "1.0.0"
@@ -49,21 +46,20 @@ __all__ = [
     "Pictify",
     "AsyncPictify",
     # Types
-    "RenderOptions",
+    "ImageFormat",
+    "GifQuality",
+    "ImageResult",
     "RenderResult",
     "RenderResultItem",
-    "BatchRenderOptions",
+    "RenderErrorEntry",
+    "GifRenderResult",
     "BatchRenderResult",
-    "BatchItemResult",
-    "BatchItemError",
-    "BatchItem",
+    "BatchResults",
+    "BatchItemStatus",
     "Template",
-    "TemplateVariable",
-    "ImageFormat",
-    "HTMLRenderOptions",
-    "GIFFrame",
-    "GIFRenderOptions",
-    "GIFRenderResult",
+    "TemplateVariableDefinition",
+    "Pagination",
+    "ListTemplatesResult",
     # Errors
     "PictifyError",
     "AuthenticationError",
@@ -71,6 +67,7 @@ __all__ = [
     "RateLimitError",
     "QuotaExceededError",
     "RenderError",
+    "ServerError",
     "NetworkError",
     "TimeoutError",
 ]
