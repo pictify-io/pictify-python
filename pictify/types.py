@@ -9,9 +9,17 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# Image output formats supported by Pictify renders.
-# `/image` accepts these via `fileExtension`; template renders via `format` (supports pdf).
-ImageFormat = Literal["png", "jpg", "jpeg", "webp", "pdf"]
+# Formats the `/image` endpoint accepts (mapped to `fileExtension`).
+# NOT `pdf`: the backend silently normalises unknown values to png, so a caller
+# asking /image for a pdf would get a PNG with no error. PDF output exists only
+# on template renders (`TemplateRenderFormat`).
+ImageFormat = Literal["png", "jpg", "jpeg", "webp"]
+
+# Formats template render accepts — images plus `pdf`.
+TemplateRenderFormat = Literal["png", "jpg", "jpeg", "webp", "pdf"]
+
+# Formats batch render accepts (the backend's actual enum: no `jpg` alias, no `pdf`).
+BatchRenderFormat = Literal["png", "jpeg", "webp", "gif"]
 
 # GIF quality presets accepted by the `/gif` endpoint.
 GifQuality = Literal["low", "medium", "high"]

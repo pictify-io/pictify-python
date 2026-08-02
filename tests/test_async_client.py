@@ -103,9 +103,11 @@ class TestRenderHtml:
             return_value=Response(200, json=mock_image_result)
         )
         async with AsyncPictify(api_key="k") as client:
-            await client.render_html(html="<div>x</div>", format="pdf")
+            # NOTE: not "pdf" — /image silently normalises unknown formats to
+            # png, so the SDK's ImageFormat type no longer offers it.
+            await client.render_html(html="<div>x</div>", format="webp")
         body = _body(route)
-        assert body["fileExtension"] == "pdf"
+        assert body["fileExtension"] == "webp"
         assert "format" not in body
 
     @pytest.mark.asyncio
@@ -417,9 +419,12 @@ class TestListTemplates:
             return_value=Response(200, json=mock_list_templates_result)
         )
         async with AsyncPictify(api_key="k") as client:
-            await client.list_templates(page=2, limit=50, sort="name")
+            await client.list_templates(
+                page=2, limit=50, sort="name", output_format="pdf"
+            )
         url = str(route.calls.last.request.url)
         assert "page=2" in url and "limit=50" in url and "sort=name" in url
+        assert "outputFormat=pdf" in url
 
     @pytest.mark.asyncio
     @respx.mock
@@ -664,16 +669,20 @@ class TestCreateVideoTemplate:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_compile_gate_422_carries_errors(self):
+    async def test_compile_gate_422_joins_errors_into_message(self):
+        # The real compile gate sends {"errors": [...]} with NO message key —
+        # the strings are the fix instructions, so they join into str(exc).
         respx.post(f"{BASE}/video/templates").mock(
             return_value=Response(
-                422, json={"message": "Compilation failed", "errors": ["Unexpected token"]}
+                422,
+                json={"errors": ["Import from x not allowed", "schema missing default"]},
             )
         )
         async with AsyncPictify(api_key="k", max_retries=0) as client:
             with pytest.raises(RenderError) as exc:
                 await client.create_video_template("Broken", "not valid tsx")
-        assert exc.value.errors == ["Unexpected token"]
+        assert exc.value.errors == ["Import from x not allowed", "schema missing default"]
+        assert "Import from x not allowed; schema missing default" in str(exc.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -785,6 +794,20 @@ class TestTransportErrors:
         async with AsyncPictify(api_key="k", max_retries=0) as client:
             with pytest.raises(TimeoutError):
                 await client.render_html(html="<div>x</div>")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_timeout_is_never_retried(self):
+        # Generation endpoints are billed, non-idempotent POSTs — the server
+        # keeps rendering (and meters) after the client aborts, so each retry
+        # of a timed-out call could bill another render. Exactly ONE request.
+        route = respx.post(f"{BASE}/image").mock(
+            side_effect=httpx.TimeoutException("t")
+        )
+        async with AsyncPictify(api_key="k", max_retries=3) as client:
+            with pytest.raises(TimeoutError):
+                await client.render_html(html="<div>x</div>")
+        assert len(route.calls) == 1
 
     @pytest.mark.asyncio
     @respx.mock

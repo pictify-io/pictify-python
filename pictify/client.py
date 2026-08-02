@@ -16,6 +16,7 @@ from pictify.errors import (
     create_error_from_response,
 )
 from pictify.types import (
+    BatchRenderFormat,
     BatchRenderResult,
     BatchResults,
     GenerateVideoTemplateResult,
@@ -27,6 +28,7 @@ from pictify.types import (
     RenderResult,
     RenderVideoResult,
     Template,
+    TemplateRenderFormat,
     VideoFormat,
     VideoTemplate,
     VideoTemplateVariables,
@@ -131,13 +133,16 @@ class Pictify:
                     method, path, json=payload, timeout=request_timeout
                 )
             except httpx.TimeoutException as e:
-                last_error = TimeoutError(
+                # A client-side TIMEOUT is never retried. Generation endpoints
+                # are billed, non-idempotent POSTs, and the server keeps
+                # rendering (and meters the result) after the client aborts —
+                # retrying a timed-out render can bill the account up to
+                # max_retries+1 times for one call. A timeout means "still
+                # working", not "failed": surface it immediately. Network
+                # errors (connection refused, DNS) stay retryable below.
+                raise TimeoutError(
                     f"Request timed out after {request_timeout}s", request_timeout
-                )
-                if attempt < self.max_retries:
-                    time.sleep(self.RETRY_DELAY * (2**attempt))
-                    continue
-                raise last_error from e
+                ) from e
             except httpx.RequestError as e:
                 last_error = NetworkError(str(e), e)
                 if attempt < self.max_retries:
@@ -179,7 +184,10 @@ class Pictify:
         selector: Optional[str] = None,
         format: Optional[ImageFormat] = None,
     ) -> ImageResult:
-        """Render an image (or PDF) directly from HTML. ``POST /image``.
+        """Render an image directly from HTML. ``POST /image``.
+
+        NOTE: ``pdf`` is not accepted here — the backend silently normalises
+        unknown formats to png. PDF output exists only on template renders.
 
         Args:
             html: Raw HTML content to render.
@@ -187,7 +195,8 @@ class Pictify:
             width: Output width in pixels (default: 1280).
             height: Output height in pixels (default: 720).
             selector: CSS selector to crop the screenshot to a specific element.
-            format: Output format, mapped to ``fileExtension`` (default: png).
+            format: Output format, mapped to ``fileExtension`` (default: png;
+                png | jpg | jpeg | webp — NOT pdf).
 
         Returns:
             ImageResult with ``url``, ``id``, and ``created_at``.
@@ -224,7 +233,8 @@ class Pictify:
             width: Output width in pixels (default: 1280).
             height: Output height in pixels (default: 720).
             selector: CSS selector to crop the screenshot to a specific element.
-            format: Output format, mapped to ``fileExtension`` (default: png).
+            format: Output format, mapped to ``fileExtension`` (default: png;
+                png | jpg | jpeg | webp — NOT pdf).
 
         Returns:
             ImageResult with ``url``, ``id``, and ``created_at``.
@@ -251,7 +261,7 @@ class Pictify:
         template_id: str,
         *,
         variables: Optional[Dict[str, Any]] = None,
-        format: Optional[ImageFormat] = None,
+        format: Optional[TemplateRenderFormat] = None,
         quality: Optional[float] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
@@ -297,7 +307,7 @@ class Pictify:
         layouts: List[str],
         *,
         variables: Optional[Dict[str, Any]] = None,
-        format: Optional[ImageFormat] = None,
+        format: Optional[TemplateRenderFormat] = None,
         quality: Optional[float] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
@@ -389,7 +399,7 @@ class Pictify:
         template_id: str,
         variable_sets: List[Dict[str, Any]],
         *,
-        format: Optional[ImageFormat] = None,
+        format: Optional[BatchRenderFormat] = None,
         quality: Optional[float] = None,
         concurrency: Optional[int] = None,
         layout: Optional[str] = None,
@@ -405,7 +415,8 @@ class Pictify:
         Args:
             template_id: The UID of the template to render.
             variable_sets: Variable sets — one render per set (max 100).
-            format: Output format (default: png).
+            format: Output format (default: png). The batch endpoint's enum:
+                no ``jpg`` alias, no ``pdf``.
             quality: Render quality (0.1-1.0, default: 0.9).
             concurrency: Maximum parallel renders (1-10, default: 5).
             layout: Render a single named layout variant for every item.
@@ -471,6 +482,7 @@ class Pictify:
         page: Optional[int] = None,
         limit: Optional[int] = None,
         sort: Optional[str] = None,
+        output_format: Optional[str] = None,
     ) -> ListTemplatesResult:
         """List templates in your account. ``GET /templates``.
 
@@ -478,6 +490,7 @@ class Pictify:
             page: Page number (1-based, default: 1).
             limit: Items per page (max 100, default: 12).
             sort: Sort order (``newest`` | ``oldest`` | ``name``).
+            output_format: Filter by output format (``image`` | ``pdf`` | ``gif``).
 
         Returns:
             ListTemplatesResult with ``templates`` and ``pagination``.
@@ -489,6 +502,8 @@ class Pictify:
             params["limit"] = limit
         if sort is not None:
             params["sort"] = sort
+        if output_format is not None:
+            params["outputFormat"] = output_format
         query = f"?{urlencode(params)}" if params else ""
 
         data = self._request("GET", f"/templates{query}")

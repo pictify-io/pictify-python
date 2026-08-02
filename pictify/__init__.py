@@ -25,6 +25,7 @@ from pictify.errors import (
 )
 from pictify.types import (
     BatchItemStatus,
+    BatchRenderFormat,
     BatchRenderResult,
     BatchResults,
     GenerateVideoTemplateResult,
@@ -39,6 +40,7 @@ from pictify.types import (
     RenderResultItem,
     RenderVideoResult,
     Template,
+    TemplateRenderFormat,
     TemplateVariableDefinition,
     VideoFormat,
     VideoTemplate,
@@ -52,6 +54,8 @@ __all__ = [
     "AsyncPictify",
     # Types
     "ImageFormat",
+    "TemplateRenderFormat",
+    "BatchRenderFormat",
     "GifQuality",
     "ImageResult",
     "RenderResult",
