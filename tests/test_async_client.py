@@ -103,9 +103,11 @@ class TestRenderHtml:
             return_value=Response(200, json=mock_image_result)
         )
         async with AsyncPictify(api_key="k") as client:
-            await client.render_html(html="<div>x</div>", format="pdf")
+            # NOTE: not "pdf" — /image silently normalises unknown formats to
+            # png, so the SDK's ImageFormat type no longer offers it.
+            await client.render_html(html="<div>x</div>", format="webp")
         body = _body(route)
-        assert body["fileExtension"] == "pdf"
+        assert body["fileExtension"] == "webp"
         assert "format" not in body
 
     @pytest.mark.asyncio
@@ -417,9 +419,12 @@ class TestListTemplates:
             return_value=Response(200, json=mock_list_templates_result)
         )
         async with AsyncPictify(api_key="k") as client:
-            await client.list_templates(page=2, limit=50, sort="name")
+            await client.list_templates(
+                page=2, limit=50, sort="name", output_format="pdf"
+            )
         url = str(route.calls.last.request.url)
         assert "page=2" in url and "limit=50" in url and "sort=name" in url
+        assert "outputFormat=pdf" in url
 
     @pytest.mark.asyncio
     @respx.mock
@@ -461,6 +466,223 @@ class TestCreateTemplate:
             with pytest.raises(RenderError) as exc:
                 await client.create_template(html="<div>x</div>")
         assert exc.value.errors == ["x"]
+
+
+# --------------------------------------------------------------------------- #
+# list_video_templates
+# --------------------------------------------------------------------------- #
+class TestListVideoTemplates:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_unwraps_envelope(self, mock_list_video_templates_result):
+        respx.get(f"{BASE}/video/templates").mock(
+            return_value=Response(200, json=mock_list_video_templates_result)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            templates = await client.list_video_templates()
+        assert len(templates) == 1
+        assert templates[0].uid == "vid_abc123"
+        assert templates[0].duration_in_frames == 240
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_error(self):
+        respx.get(f"{BASE}/video/templates").mock(
+            return_value=Response(401, json={"message": "Invalid Request"})
+        )
+        async with AsyncPictify(api_key="bad", max_retries=0) as client:
+            with pytest.raises(AuthenticationError):
+                await client.list_video_templates()
+
+
+# --------------------------------------------------------------------------- #
+# get_video_template_variables
+# --------------------------------------------------------------------------- #
+class TestGetVideoTemplateVariables:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_happy_path(self, mock_video_variables_result):
+        respx.get(f"{BASE}/video/templates/vid_abc123/variables").mock(
+            return_value=Response(200, json=mock_video_variables_result)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            result = await client.get_video_template_variables("vid_abc123")
+        assert result.template_uid == "vid_abc123"
+        assert result.variables[0].name == "title"
+        assert result.referenced == ["title", "accent"]
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_not_found(self):
+        respx.get(f"{BASE}/video/templates/missing/variables").mock(
+            return_value=Response(404, json={"message": "Template not found"})
+        )
+        async with AsyncPictify(api_key="k", max_retries=0) as client:
+            with pytest.raises(TemplateNotFoundError):
+                await client.get_video_template_variables("missing")
+
+
+# --------------------------------------------------------------------------- #
+# render_video
+# --------------------------------------------------------------------------- #
+class TestRenderVideo:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_happy_path(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            result = await client.render_video("vid_abc123", variables={"title": "Hi"})
+        assert result.url == "https://media.pictify.io/videos/abc123.mp4"
+        assert result.duration_in_frames == 240
+        body = _body(route)
+        assert body["variables"] == {"title": "Hi"}
+        assert body["format"] == "mp4"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_gif_format(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            await client.render_video("vid_abc123", format="gif")
+        assert _body(route)["format"] == "gif"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_uses_video_render_timeout_not_client_default(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        async with AsyncPictify(api_key="k") as client:  # client-wide default is 30s
+            await client.render_video("vid_abc123")
+        assert route.calls.last.request.extensions["timeout"]["read"] == 300.0
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_per_call_timeout_override(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            await client.render_video("vid_abc123", timeout=600.0)
+        assert route.calls.last.request.extensions["timeout"]["read"] == 600.0
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_url_encodes_template_id(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/a%2Fb/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            await client.render_video("a/b")
+        assert route.called
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_invalid_variable_error(self):
+        respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(
+                422, json={"message": "Unknown variable: bogus", "code": "invalid_variable"}
+            )
+        )
+        async with AsyncPictify(api_key="k", max_retries=0) as client:
+            with pytest.raises(RenderError):
+                await client.render_video("vid_abc123", variables={"bogus": "x"})
+
+
+# --------------------------------------------------------------------------- #
+# generate_video_template
+# --------------------------------------------------------------------------- #
+class TestGenerateVideoTemplate:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_happy_path(self, mock_generate_video_result):
+        route = respx.post(f"{BASE}/video/templates/generate").mock(
+            return_value=Response(200, json=mock_generate_video_result)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            result = await client.generate_video_template("A launch teaser")
+        assert result.template.uid == "vid_abc123"
+        assert result.preview_url == "https://media.pictify.io/previews/vid_abc123.png"
+        body = _body(route)
+        assert body["prompt"] == "A launch teaser"
+        assert body["durationSeconds"] == 8
+        assert "brandColor" not in body
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_uses_generate_timeout(self, mock_generate_video_result):
+        route = respx.post(f"{BASE}/video/templates/generate").mock(
+            return_value=Response(200, json=mock_generate_video_result)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            await client.generate_video_template("A promo", brand_color="#ff5500")
+        assert route.calls.last.request.extensions["timeout"]["read"] == 180.0
+        assert _body(route)["brandColor"] == "#ff5500"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_error(self):
+        respx.post(f"{BASE}/video/templates/generate").mock(
+            return_value=Response(429, json={"message": "limit", "code": "quota_exceeded"})
+        )
+        async with AsyncPictify(api_key="k", max_retries=0) as client:
+            with pytest.raises(QuotaExceededError):
+                await client.generate_video_template("A promo")
+
+
+# --------------------------------------------------------------------------- #
+# create_video_template
+# --------------------------------------------------------------------------- #
+class TestCreateVideoTemplate:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_happy_path_computes_duration_in_frames(self, mock_video_template_envelope):
+        route = respx.post(f"{BASE}/video/templates").mock(
+            return_value=Response(200, json=mock_video_template_envelope)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            template = await client.create_video_template(
+                "Own scene", "export default () => null"
+            )
+        assert template.uid == "vid_abc123"
+        body = _body(route)
+        assert body["kind"] == "tsx"
+        assert body["status"] == "draft"
+        assert body["durationInFrames"] == 240  # round(8 * 30)
+        assert route.calls.last.request.extensions["timeout"]["read"] == 180.0
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_custom_fps_and_duration(self, mock_video_template_envelope):
+        route = respx.post(f"{BASE}/video/templates").mock(
+            return_value=Response(200, json=mock_video_template_envelope)
+        )
+        async with AsyncPictify(api_key="k") as client:
+            await client.create_video_template(
+                "Scene", "export default () => null", fps=24, duration_seconds=2.5
+            )
+        assert _body(route)["durationInFrames"] == 60  # round(2.5 * 24)
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_compile_gate_422_joins_errors_into_message(self):
+        # The real compile gate sends {"errors": [...]} with NO message key —
+        # the strings are the fix instructions, so they join into str(exc).
+        respx.post(f"{BASE}/video/templates").mock(
+            return_value=Response(
+                422,
+                json={"errors": ["Import from x not allowed", "schema missing default"]},
+            )
+        )
+        async with AsyncPictify(api_key="k", max_retries=0) as client:
+            with pytest.raises(RenderError) as exc:
+                await client.create_video_template("Broken", "not valid tsx")
+        assert exc.value.errors == ["Import from x not allowed", "schema missing default"]
+        assert "Import from x not allowed; schema missing default" in str(exc.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -572,6 +794,20 @@ class TestTransportErrors:
         async with AsyncPictify(api_key="k", max_retries=0) as client:
             with pytest.raises(TimeoutError):
                 await client.render_html(html="<div>x</div>")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_timeout_is_never_retried(self):
+        # Generation endpoints are billed, non-idempotent POSTs — the server
+        # keeps rendering (and meters) after the client aborts, so each retry
+        # of a timed-out call could bill another render. Exactly ONE request.
+        route = respx.post(f"{BASE}/image").mock(
+            side_effect=httpx.TimeoutException("t")
+        )
+        async with AsyncPictify(api_key="k", max_retries=3) as client:
+            with pytest.raises(TimeoutError):
+                await client.render_html(html="<div>x</div>")
+        assert len(route.calls) == 1
 
     @pytest.mark.asyncio
     @respx.mock

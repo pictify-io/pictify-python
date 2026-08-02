@@ -4,7 +4,9 @@ There is no unified error envelope across the Pictify API: image/GIF endpoints
 return ``{"error", "code"}`` while template/CRUD endpoints return ``{"message"}``
 or ``{"message", "errors"}``. The SDK reads both keys.
 
-Error message precedence: ``body["error"] or body["message"] or status_text``.
+Error message precedence: ``body["error"] or body["message"] or "; ".join(body["errors"])
+or status_text`` — the joined ``errors`` list is the video compile gate's 422
+shape, where the strings are the fix instructions.
 
 Status mapping (mirrors the Node SDK reference):
     - 401 -> AuthenticationError
@@ -150,7 +152,18 @@ def create_error_from_response(
     Message precedence: ``body["error"] or body["message"] or "..."``.
     """
     body = response_body or {}
-    message = body.get("error") or body.get("message") or "An unexpected error occurred"
+    # The video compile gate returns 422 {"errors": ["..."]} with no
+    # message/error key — those strings ARE the fix instructions, so they
+    # join into the message rather than leaving a generic fallback.
+    errors = body.get("errors")
+    joined_errors = (
+        "; ".join(errors)
+        if isinstance(errors, list) and errors and all(isinstance(e, str) for e in errors)
+        else None
+    )
+    message = (
+        body.get("error") or body.get("message") or joined_errors or "An unexpected error occurred"
+    )
 
     if status_code == 401:
         return AuthenticationError(message, status_code, body)

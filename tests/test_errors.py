@@ -150,6 +150,24 @@ class TestCreateErrorFromResponse:
         error = create_error_from_response(422, {"message": "M"})
         assert error.message == "M"
 
+    def test_422_string_errors_join_into_message(self):
+        # The video compile gate returns 422 {"errors": ["..."]} with no
+        # message/error key — those strings ARE the fix instructions.
+        error = create_error_from_response(
+            422, {"errors": ["Import from x not allowed", "schema missing default"]}
+        )
+        assert isinstance(error, RenderError)
+        assert error.message == "Import from x not allowed; schema missing default"
+        assert "Import from x not allowed; schema missing default" in str(error)
+
+    def test_message_key_wins_over_string_errors(self):
+        error = create_error_from_response(422, {"message": "M", "errors": ["a", "b"]})
+        assert error.message == "M"
+
+    def test_non_string_errors_do_not_join(self):
+        error = create_error_from_response(422, {"errors": [{"field": "name"}]})
+        assert error.message == "An unexpected error occurred"
+
     def test_default_message_when_empty(self):
         error = create_error_from_response(500, {})
         assert error.message == "An unexpected error occurred"

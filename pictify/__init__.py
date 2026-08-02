@@ -25,8 +25,10 @@ from pictify.errors import (
 )
 from pictify.types import (
     BatchItemStatus,
+    BatchRenderFormat,
     BatchRenderResult,
     BatchResults,
+    GenerateVideoTemplateResult,
     GifQuality,
     GifRenderResult,
     ImageFormat,
@@ -36,8 +38,13 @@ from pictify.types import (
     RenderErrorEntry,
     RenderResult,
     RenderResultItem,
+    RenderVideoResult,
     Template,
+    TemplateRenderFormat,
     TemplateVariableDefinition,
+    VideoFormat,
+    VideoTemplate,
+    VideoTemplateVariables,
 )
 
 __version__ = "1.0.0"
@@ -47,6 +54,8 @@ __all__ = [
     "AsyncPictify",
     # Types
     "ImageFormat",
+    "TemplateRenderFormat",
+    "BatchRenderFormat",
     "GifQuality",
     "ImageResult",
     "RenderResult",
@@ -60,6 +69,11 @@ __all__ = [
     "TemplateVariableDefinition",
     "Pagination",
     "ListTemplatesResult",
+    "VideoFormat",
+    "VideoTemplate",
+    "VideoTemplateVariables",
+    "RenderVideoResult",
+    "GenerateVideoTemplateResult",
     # Errors
     "PictifyError",
     "AuthenticationError",

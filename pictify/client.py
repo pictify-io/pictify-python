@@ -16,15 +16,22 @@ from pictify.errors import (
     create_error_from_response,
 )
 from pictify.types import (
+    BatchRenderFormat,
     BatchRenderResult,
     BatchResults,
+    GenerateVideoTemplateResult,
     GifQuality,
     GifRenderResult,
     ImageFormat,
     ImageResult,
     ListTemplatesResult,
     RenderResult,
+    RenderVideoResult,
     Template,
+    TemplateRenderFormat,
+    VideoFormat,
+    VideoTemplate,
+    VideoTemplateVariables,
 )
 
 __all__ = ["Pictify"]
@@ -48,6 +55,10 @@ class Pictify:
 
     DEFAULT_BASE_URL = "https://api.pictify.io"
     DEFAULT_TIMEOUT = 30.0
+    # Video renders legitimately run minutes — per-call defaults, independent
+    # of the client-wide `timeout`.
+    VIDEO_RENDER_TIMEOUT = 300.0
+    VIDEO_TEMPLATE_TIMEOUT = 180.0
     MAX_RETRIES = 3
     RETRY_DELAY = 1.0
 
@@ -102,26 +113,36 @@ class Pictify:
         path: str,
         *,
         json: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
     ) -> Any:
         """Make an authenticated JSON request with retries on 5xx/network.
 
         Retries ONLY on 5xx and network errors (never on 4xx). Returns the parsed
         JSON body, or raises a typed :class:`PictifyError` on HTTP errors.
+
+        ``timeout`` overrides the client-wide timeout for this request only —
+        video renders legitimately run minutes.
         """
         payload = _strip_none(json) if json is not None else None
+        request_timeout = self.timeout if timeout is None else timeout
         last_error: Optional[Exception] = None
 
         for attempt in range(self.max_retries + 1):
             try:
-                response = self._client.request(method, path, json=payload)
-            except httpx.TimeoutException as e:
-                last_error = TimeoutError(
-                    f"Request timed out after {self.timeout}s", self.timeout
+                response = self._client.request(
+                    method, path, json=payload, timeout=request_timeout
                 )
-                if attempt < self.max_retries:
-                    time.sleep(self.RETRY_DELAY * (2**attempt))
-                    continue
-                raise last_error from e
+            except httpx.TimeoutException as e:
+                # A client-side TIMEOUT is never retried. Generation endpoints
+                # are billed, non-idempotent POSTs, and the server keeps
+                # rendering (and meters the result) after the client aborts —
+                # retrying a timed-out render can bill the account up to
+                # max_retries+1 times for one call. A timeout means "still
+                # working", not "failed": surface it immediately. Network
+                # errors (connection refused, DNS) stay retryable below.
+                raise TimeoutError(
+                    f"Request timed out after {request_timeout}s", request_timeout
+                ) from e
             except httpx.RequestError as e:
                 last_error = NetworkError(str(e), e)
                 if attempt < self.max_retries:
@@ -163,7 +184,10 @@ class Pictify:
         selector: Optional[str] = None,
         format: Optional[ImageFormat] = None,
     ) -> ImageResult:
-        """Render an image (or PDF) directly from HTML. ``POST /image``.
+        """Render an image directly from HTML. ``POST /image``.
+
+        NOTE: ``pdf`` is not accepted here — the backend silently normalises
+        unknown formats to png. PDF output exists only on template renders.
 
         Args:
             html: Raw HTML content to render.
@@ -171,7 +195,8 @@ class Pictify:
             width: Output width in pixels (default: 1280).
             height: Output height in pixels (default: 720).
             selector: CSS selector to crop the screenshot to a specific element.
-            format: Output format, mapped to ``fileExtension`` (default: png).
+            format: Output format, mapped to ``fileExtension`` (default: png;
+                png | jpg | jpeg | webp — NOT pdf).
 
         Returns:
             ImageResult with ``url``, ``id``, and ``created_at``.
@@ -208,7 +233,8 @@ class Pictify:
             width: Output width in pixels (default: 1280).
             height: Output height in pixels (default: 720).
             selector: CSS selector to crop the screenshot to a specific element.
-            format: Output format, mapped to ``fileExtension`` (default: png).
+            format: Output format, mapped to ``fileExtension`` (default: png;
+                png | jpg | jpeg | webp — NOT pdf).
 
         Returns:
             ImageResult with ``url``, ``id``, and ``created_at``.
@@ -235,7 +261,7 @@ class Pictify:
         template_id: str,
         *,
         variables: Optional[Dict[str, Any]] = None,
-        format: Optional[ImageFormat] = None,
+        format: Optional[TemplateRenderFormat] = None,
         quality: Optional[float] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
@@ -281,7 +307,7 @@ class Pictify:
         layouts: List[str],
         *,
         variables: Optional[Dict[str, Any]] = None,
-        format: Optional[ImageFormat] = None,
+        format: Optional[TemplateRenderFormat] = None,
         quality: Optional[float] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
@@ -373,7 +399,7 @@ class Pictify:
         template_id: str,
         variable_sets: List[Dict[str, Any]],
         *,
-        format: Optional[ImageFormat] = None,
+        format: Optional[BatchRenderFormat] = None,
         quality: Optional[float] = None,
         concurrency: Optional[int] = None,
         layout: Optional[str] = None,
@@ -389,7 +415,8 @@ class Pictify:
         Args:
             template_id: The UID of the template to render.
             variable_sets: Variable sets — one render per set (max 100).
-            format: Output format (default: png).
+            format: Output format (default: png). The batch endpoint's enum:
+                no ``jpg`` alias, no ``pdf``.
             quality: Render quality (0.1-1.0, default: 0.9).
             concurrency: Maximum parallel renders (1-10, default: 5).
             layout: Render a single named layout variant for every item.
@@ -455,6 +482,7 @@ class Pictify:
         page: Optional[int] = None,
         limit: Optional[int] = None,
         sort: Optional[str] = None,
+        output_format: Optional[str] = None,
     ) -> ListTemplatesResult:
         """List templates in your account. ``GET /templates``.
 
@@ -462,6 +490,7 @@ class Pictify:
             page: Page number (1-based, default: 1).
             limit: Items per page (max 100, default: 12).
             sort: Sort order (``newest`` | ``oldest`` | ``name``).
+            output_format: Filter by output format (``image`` | ``pdf`` | ``gif``).
 
         Returns:
             ListTemplatesResult with ``templates`` and ``pagination``.
@@ -473,6 +502,8 @@ class Pictify:
             params["limit"] = limit
         if sort is not None:
             params["sort"] = sort
+        if output_format is not None:
+            params["outputFormat"] = output_format
         query = f"?{urlencode(params)}" if params else ""
 
         data = self._request("GET", f"/templates{query}")
@@ -517,3 +548,172 @@ class Pictify:
             },
         )
         return Template.model_validate((data or {}).get("template", data))
+
+    # ------------------------------------------------------------------ #
+    # Video templates
+    # ------------------------------------------------------------------ #
+
+    def list_video_templates(self) -> List[VideoTemplate]:
+        """List your video templates. ``GET /video/templates``.
+
+        Unwraps the ``{templates}`` envelope.
+
+        Returns:
+            List of VideoTemplate.
+        """
+        data = self._request("GET", "/video/templates")
+        return [
+            VideoTemplate.model_validate(t) for t in (data or {}).get("templates") or []
+        ]
+
+    def get_video_template_variables(self, template_id: str) -> VideoTemplateVariables:
+        """Get a video template's variable definitions — what you can set when
+        rendering it. Call before :meth:`render_video` to know what to pass.
+
+        ``GET /video/templates/:uid/variables``.
+
+        Args:
+            template_id: The UID of the video template.
+
+        Returns:
+            VideoTemplateVariables with ``variables`` and ``referenced`` names.
+        """
+        data = self._request(
+            "GET", f"/video/templates/{quote(template_id, safe='')}/variables"
+        )
+        return VideoTemplateVariables.model_validate(data)
+
+    def render_video(
+        self,
+        template_id: str,
+        *,
+        variables: Optional[Dict[str, Any]] = None,
+        format: Optional[VideoFormat] = None,
+        timeout: Optional[float] = None,
+    ) -> RenderVideoResult:
+        """Render a video template to MP4 — or an animated GIF — with variables.
+
+        ``POST /video/templates/:uid/render``. The request WAITS for the finished
+        file (up to a few minutes) and returns its hosted URL. Each render
+        consumes one video credit. Omitted variables render their defaults;
+        unknown variable names fail with a 422.
+
+        Args:
+            template_id: The UID of the video template to render.
+            variables: Variables to inject into the template.
+            format: Output format (default: mp4). ``gif`` is a palette-optimised
+                animated GIF capped at 15fps / 720px wide.
+            timeout: Per-call timeout in seconds (default: 300 — video renders
+                take minutes).
+
+        Returns:
+            RenderVideoResult with ``url``, ``duration_in_frames``, and ``format``.
+        """
+        data = self._request(
+            "POST",
+            f"/video/templates/{quote(template_id, safe='')}/render",
+            json={
+                "variables": variables or {},
+                "format": format or "mp4",
+            },
+            timeout=timeout if timeout is not None else self.VIDEO_RENDER_TIMEOUT,
+        )
+        return RenderVideoResult.model_validate(data)
+
+    def generate_video_template(
+        self,
+        prompt: str,
+        *,
+        width: int = 1080,
+        height: int = 1080,
+        duration_seconds: float = 8,
+        brand_color: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> GenerateVideoTemplateResult:
+        """Generate a new video template from a prompt using AI.
+
+        ``POST /video/templates/generate``. The service designs a motion brief,
+        writes the scene as code, compiles it, renders preview frames and reviews
+        them visually — then saves a draft template whose texts, colors and
+        optional image are editable variables. Takes 30-60 seconds; metered as
+        one render.
+
+        Args:
+            prompt: What the video is for, with any mood/style guidance (max 2000 chars).
+            width: Canvas width in pixels (default: 1080).
+            height: Canvas height in pixels (default: 1080).
+            duration_seconds: Video length in seconds, 1-60 (default: 8).
+            brand_color: Optional brand color (hex) to build the palette around.
+            timeout: Per-call timeout in seconds (default: 180).
+
+        Returns:
+            GenerateVideoTemplateResult with ``template`` and ``preview_url``.
+        """
+        data = self._request(
+            "POST",
+            "/video/templates/generate",
+            json={
+                "prompt": prompt,
+                "width": width,
+                "height": height,
+                "durationSeconds": duration_seconds,
+                "brandColor": brand_color,
+            },
+            timeout=timeout if timeout is not None else self.VIDEO_TEMPLATE_TIMEOUT,
+        )
+        return GenerateVideoTemplateResult.model_validate(data)
+
+    def create_video_template(
+        self,
+        name: str,
+        tsx: str,
+        *,
+        width: int = 1080,
+        height: int = 1080,
+        fps: int = 30,
+        duration_seconds: float = 8,
+        timeout: Optional[float] = None,
+    ) -> VideoTemplate:
+        """Upload a Remotion scene you wrote as a new video template.
+
+        ``POST /video/templates`` — unwraps the ``{template}`` envelope. Sends
+        ``kind="tsx"``, ``status="draft"``, and ``durationInFrames`` computed as
+        ``round(duration_seconds * fps)``.
+
+        The source passes a compile gate BEFORE anything is saved: invalid tsx
+        rejects with a 422 carrying the compiler errors (``error.errors``) and
+        creates NOTHING, so retrying cannot litter the account with broken
+        templates.
+
+        Args:
+            name: Template name shown in the dashboard.
+            tsx: The complete single-file Remotion scene source. Must export a
+                zod ``schema`` (flat fields with defaults — they become the
+                template's variables) and a default React component; imports
+                limited to ``remotion``, ``react`` and ``zod``.
+            width: Canvas width in pixels (default: 1080).
+            height: Canvas height in pixels (default: 1080).
+            fps: Frames per second (default: 30).
+            duration_seconds: Video length in seconds (default: 8).
+            timeout: Per-call timeout in seconds (default: 180 — the compile
+                gate bundles the scene).
+
+        Returns:
+            The created VideoTemplate.
+        """
+        data = self._request(
+            "POST",
+            "/video/templates",
+            json={
+                "name": name,
+                "kind": "tsx",
+                "tsx": tsx,
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "durationInFrames": round(duration_seconds * fps),
+                "status": "draft",
+            },
+            timeout=timeout if timeout is not None else self.VIDEO_TEMPLATE_TIMEOUT,
+        )
+        return VideoTemplate.model_validate((data or {}).get("template", data))

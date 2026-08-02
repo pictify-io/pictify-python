@@ -112,10 +112,12 @@ class TestRenderHtml:
             return_value=Response(200, json=mock_image_result)
         )
         client = Pictify(api_key="k")
-        client.render_html(html="<div>x</div>", format="pdf")
+        # NOTE: not "pdf" — /image silently normalises unknown formats to png,
+        # so the SDK's ImageFormat type no longer offers it.
+        client.render_html(html="<div>x</div>", format="webp")
 
         body = _body(route)
-        assert body["fileExtension"] == "pdf"
+        assert body["fileExtension"] == "webp"
         assert "format" not in body
         client.close()
 
@@ -475,11 +477,12 @@ class TestListTemplates:
             return_value=Response(200, json=mock_list_templates_result)
         )
         client = Pictify(api_key="k")
-        client.list_templates(page=2, limit=50, sort="name")
+        client.list_templates(page=2, limit=50, sort="name", output_format="pdf")
         url = str(route.calls.last.request.url)
         assert "page=2" in url
         assert "limit=50" in url
         assert "sort=name" in url
+        assert "outputFormat=pdf" in url
         client.close()
 
     @respx.mock
@@ -548,6 +551,292 @@ class TestCreateTemplate:
         with pytest.raises(RenderError) as exc:
             client.create_template(html="<div>x</div>")
         assert exc.value.errors == ["x"]
+        client.close()
+
+
+# --------------------------------------------------------------------------- #
+# list_video_templates
+# --------------------------------------------------------------------------- #
+class TestListVideoTemplates:
+    @respx.mock
+    def test_unwraps_envelope(self, mock_list_video_templates_result):
+        respx.get(f"{BASE}/video/templates").mock(
+            return_value=Response(200, json=mock_list_video_templates_result)
+        )
+        client = Pictify(api_key="k")
+        templates = client.list_video_templates()
+        assert len(templates) == 1
+        assert templates[0].uid == "vid_abc123"
+        assert templates[0].kind == "tsx"
+        assert templates[0].duration_in_frames == 240
+        assert templates[0].poster_url is not None
+        client.close()
+
+    @respx.mock
+    def test_empty_list(self):
+        respx.get(f"{BASE}/video/templates").mock(
+            return_value=Response(200, json={"templates": []})
+        )
+        client = Pictify(api_key="k")
+        assert client.list_video_templates() == []
+        client.close()
+
+    @respx.mock
+    def test_error(self):
+        respx.get(f"{BASE}/video/templates").mock(
+            return_value=Response(401, json={"message": "Invalid Request"})
+        )
+        client = Pictify(api_key="bad", max_retries=0)
+        with pytest.raises(AuthenticationError):
+            client.list_video_templates()
+        client.close()
+
+
+# --------------------------------------------------------------------------- #
+# get_video_template_variables
+# --------------------------------------------------------------------------- #
+class TestGetVideoTemplateVariables:
+    @respx.mock
+    def test_happy_path(self, mock_video_variables_result):
+        respx.get(f"{BASE}/video/templates/vid_abc123/variables").mock(
+            return_value=Response(200, json=mock_video_variables_result)
+        )
+        client = Pictify(api_key="k")
+        result = client.get_video_template_variables("vid_abc123")
+        assert result.template_uid == "vid_abc123"
+        assert result.template_name == "Promo"
+        assert result.kind == "tsx"
+        assert result.variables[0].name == "title"
+        assert result.variables[1].default_value == "#ff5500"
+        assert result.referenced == ["title", "accent"]
+        client.close()
+
+    @respx.mock
+    def test_url_encodes_template_id(self, mock_video_variables_result):
+        route = respx.get(f"{BASE}/video/templates/a%2Fb/variables").mock(
+            return_value=Response(200, json=mock_video_variables_result)
+        )
+        client = Pictify(api_key="k")
+        client.get_video_template_variables("a/b")
+        assert route.called
+        client.close()
+
+    @respx.mock
+    def test_not_found(self):
+        respx.get(f"{BASE}/video/templates/missing/variables").mock(
+            return_value=Response(404, json={"message": "Template not found"})
+        )
+        client = Pictify(api_key="k", max_retries=0)
+        with pytest.raises(TemplateNotFoundError):
+            client.get_video_template_variables("missing")
+        client.close()
+
+
+# --------------------------------------------------------------------------- #
+# render_video
+# --------------------------------------------------------------------------- #
+class TestRenderVideo:
+    @respx.mock
+    def test_happy_path(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        client = Pictify(api_key="k")
+        result = client.render_video("vid_abc123", variables={"title": "Hi"})
+        assert result.url == "https://media.pictify.io/videos/abc123.mp4"
+        assert result.duration_in_frames == 240
+        assert result.format == "mp4"
+        body = _body(route)
+        assert body["variables"] == {"title": "Hi"}
+        assert body["format"] == "mp4"
+        client.close()
+
+    @respx.mock
+    def test_gif_format(self, mock_render_video_result):
+        mock_render_video_result["format"] = "gif"
+        route = respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        client = Pictify(api_key="k")
+        result = client.render_video("vid_abc123", format="gif")
+        assert _body(route)["format"] == "gif"
+        assert result.format == "gif"
+        client.close()
+
+    @respx.mock
+    def test_default_variables_is_empty_dict(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        client = Pictify(api_key="k")
+        client.render_video("vid_abc123")
+        assert _body(route)["variables"] == {}
+        client.close()
+
+    @respx.mock
+    def test_uses_video_render_timeout_not_client_default(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        client = Pictify(api_key="k")  # client-wide default is 30s
+        client.render_video("vid_abc123")
+        timeouts = route.calls.last.request.extensions["timeout"]
+        assert timeouts["read"] == 300.0
+        client.close()
+
+    @respx.mock
+    def test_per_call_timeout_override(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        client = Pictify(api_key="k")
+        client.render_video("vid_abc123", timeout=600.0)
+        timeouts = route.calls.last.request.extensions["timeout"]
+        assert timeouts["read"] == 600.0
+        client.close()
+
+    @respx.mock
+    def test_url_encodes_template_id(self, mock_render_video_result):
+        route = respx.post(f"{BASE}/video/templates/a%2Fb/render").mock(
+            return_value=Response(200, json=mock_render_video_result)
+        )
+        client = Pictify(api_key="k")
+        client.render_video("a/b")
+        assert route.called
+        client.close()
+
+    @respx.mock
+    def test_invalid_variable_error(self):
+        respx.post(f"{BASE}/video/templates/vid_abc123/render").mock(
+            return_value=Response(
+                422, json={"message": "Unknown variable: bogus", "code": "invalid_variable"}
+            )
+        )
+        client = Pictify(api_key="k", max_retries=0)
+        with pytest.raises(RenderError):
+            client.render_video("vid_abc123", variables={"bogus": "x"})
+        client.close()
+
+
+# --------------------------------------------------------------------------- #
+# generate_video_template
+# --------------------------------------------------------------------------- #
+class TestGenerateVideoTemplate:
+    @respx.mock
+    def test_happy_path(self, mock_generate_video_result):
+        route = respx.post(f"{BASE}/video/templates/generate").mock(
+            return_value=Response(200, json=mock_generate_video_result)
+        )
+        client = Pictify(api_key="k")
+        result = client.generate_video_template("A launch teaser")
+        assert result.template.uid == "vid_abc123"
+        assert result.preview_url == "https://media.pictify.io/previews/vid_abc123.png"
+        body = _body(route)
+        assert body["prompt"] == "A launch teaser"
+        assert body["width"] == 1080
+        assert body["height"] == 1080
+        assert body["durationSeconds"] == 8
+        assert "brandColor" not in body
+        client.close()
+
+    @respx.mock
+    def test_optional_params_sent(self, mock_generate_video_result):
+        route = respx.post(f"{BASE}/video/templates/generate").mock(
+            return_value=Response(200, json=mock_generate_video_result)
+        )
+        client = Pictify(api_key="k")
+        client.generate_video_template(
+            "A promo", width=1920, height=1080, duration_seconds=12, brand_color="#ff5500"
+        )
+        body = _body(route)
+        assert body["width"] == 1920
+        assert body["durationSeconds"] == 12
+        assert body["brandColor"] == "#ff5500"
+        client.close()
+
+    @respx.mock
+    def test_uses_generate_timeout(self, mock_generate_video_result):
+        route = respx.post(f"{BASE}/video/templates/generate").mock(
+            return_value=Response(200, json=mock_generate_video_result)
+        )
+        client = Pictify(api_key="k")
+        client.generate_video_template("A promo")
+        assert route.calls.last.request.extensions["timeout"]["read"] == 180.0
+        client.close()
+
+    @respx.mock
+    def test_error(self):
+        respx.post(f"{BASE}/video/templates/generate").mock(
+            return_value=Response(429, json={"message": "limit", "code": "quota_exceeded"})
+        )
+        client = Pictify(api_key="k", max_retries=0)
+        with pytest.raises(QuotaExceededError):
+            client.generate_video_template("A promo")
+        client.close()
+
+
+# --------------------------------------------------------------------------- #
+# create_video_template
+# --------------------------------------------------------------------------- #
+class TestCreateVideoTemplate:
+    @respx.mock
+    def test_happy_path_computes_duration_in_frames(self, mock_video_template_envelope):
+        route = respx.post(f"{BASE}/video/templates").mock(
+            return_value=Response(200, json=mock_video_template_envelope)
+        )
+        client = Pictify(api_key="k")
+        template = client.create_video_template("Own scene", "export default () => null")
+        assert template.uid == "vid_abc123"
+        body = _body(route)
+        assert body["name"] == "Own scene"
+        assert body["tsx"] == "export default () => null"
+        assert body["kind"] == "tsx"
+        assert body["status"] == "draft"
+        assert body["width"] == 1080
+        assert body["height"] == 1080
+        assert body["fps"] == 30
+        assert body["durationInFrames"] == 240  # round(8 * 30)
+        client.close()
+
+    @respx.mock
+    def test_custom_fps_and_duration(self, mock_video_template_envelope):
+        route = respx.post(f"{BASE}/video/templates").mock(
+            return_value=Response(200, json=mock_video_template_envelope)
+        )
+        client = Pictify(api_key="k")
+        client.create_video_template(
+            "Scene", "export default () => null", fps=24, duration_seconds=2.5
+        )
+        body = _body(route)
+        assert body["fps"] == 24
+        assert body["durationInFrames"] == 60  # round(2.5 * 24)
+        client.close()
+
+    @respx.mock
+    def test_uses_create_timeout(self, mock_video_template_envelope):
+        route = respx.post(f"{BASE}/video/templates").mock(
+            return_value=Response(200, json=mock_video_template_envelope)
+        )
+        client = Pictify(api_key="k")
+        client.create_video_template("Scene", "export default () => null")
+        assert route.calls.last.request.extensions["timeout"]["read"] == 180.0
+        client.close()
+
+    @respx.mock
+    def test_compile_gate_422_joins_errors_into_message(self):
+        # The real compile gate sends {"errors": [...]} with NO message key —
+        # the strings are the fix instructions, so they join into str(exc).
+        respx.post(f"{BASE}/video/templates").mock(
+            return_value=Response(
+                422,
+                json={"errors": ["Import from x not allowed", "schema missing default"]},
+            )
+        )
+        client = Pictify(api_key="k", max_retries=0)
+        with pytest.raises(RenderError) as exc:
+            client.create_video_template("Broken", "not valid tsx")
+        assert exc.value.errors == ["Import from x not allowed", "schema missing default"]
+        assert "Import from x not allowed; schema missing default" in str(exc.value)
         client.close()
 
 
@@ -655,6 +944,20 @@ class TestTransportErrors:
         client = Pictify(api_key="k", max_retries=0)
         with pytest.raises(TimeoutError):
             client.render_html(html="<div>x</div>")
+        client.close()
+
+    @respx.mock
+    def test_timeout_is_never_retried(self):
+        # Generation endpoints are billed, non-idempotent POSTs — the server
+        # keeps rendering (and meters) after the client aborts, so each retry
+        # of a timed-out call could bill another render. Exactly ONE request.
+        route = respx.post(f"{BASE}/image").mock(
+            side_effect=httpx.TimeoutException("t")
+        )
+        client = Pictify(api_key="k", max_retries=3)
+        with pytest.raises(TimeoutError):
+            client.render_html(html="<div>x</div>")
+        assert len(route.calls) == 1
         client.close()
 
     @respx.mock
