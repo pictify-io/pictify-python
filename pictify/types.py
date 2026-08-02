@@ -16,6 +16,10 @@ ImageFormat = Literal["png", "jpg", "jpeg", "webp", "pdf"]
 # GIF quality presets accepted by the `/gif` endpoint.
 GifQuality = Literal["low", "medium", "high"]
 
+# Video output formats supported by video template renders.
+# `gif` is a palette-optimised animated GIF capped at 15fps / 720px wide.
+VideoFormat = Literal["mp4", "gif"]
+
 
 class ImageResult(BaseModel):
     """Result of an ``/image`` render (``render_html`` / ``render_url``).
@@ -230,6 +234,89 @@ class Template(BaseModel):
     )
     updated_at: Optional[str] = Field(
         default=None, alias="updatedAt", description="Last update timestamp"
+    )
+
+
+class VideoTemplate(BaseModel):
+    """A video template returned by the video template endpoints.
+
+    ``kind`` is ``timeline`` (built in the visual studio) or ``tsx`` (a
+    single-file Remotion scene). Both render identically. Kept permissive:
+    unknown engine fields pass through.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    uid: str = Field(..., description="Unique video template ID")
+    name: Optional[str] = Field(default=None, description="Template name")
+    kind: Optional[str] = Field(default=None, description="Template kind (timeline | tsx)")
+    width: Optional[int] = Field(default=None, description="Canvas width in pixels")
+    height: Optional[int] = Field(default=None, description="Canvas height in pixels")
+    fps: Optional[int] = Field(default=None, description="Frames per second")
+    duration_in_frames: Optional[int] = Field(
+        default=None, alias="durationInFrames", description="Video length in frames"
+    )
+    poster_url: Optional[str] = Field(
+        default=None, alias="posterUrl", description="Poster frame URL"
+    )
+    status: Optional[str] = Field(default=None, description="Template status (e.g. draft)")
+    variable_definitions: Optional[List[TemplateVariableDefinition]] = Field(
+        default=None, alias="variableDefinitions", description="Structured variable definitions"
+    )
+    created_at: Optional[str] = Field(
+        default=None, alias="createdAt", description="Creation timestamp"
+    )
+    updated_at: Optional[str] = Field(
+        default=None, alias="updatedAt", description="Last update timestamp"
+    )
+
+
+class VideoTemplateVariables(BaseModel):
+    """Variable definitions of a video template (``get_video_template_variables``).
+
+    ``GET /video/templates/:uid/variables``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    template_uid: Optional[str] = Field(
+        default=None, alias="templateUid", description="Video template UID"
+    )
+    template_name: Optional[str] = Field(
+        default=None, alias="templateName", description="Video template name"
+    )
+    kind: Optional[str] = Field(default=None, description="Template kind (timeline | tsx)")
+    variables: List[TemplateVariableDefinition] = Field(
+        default_factory=list, description="Variable definitions you can set when rendering"
+    )
+    referenced: List[str] = Field(
+        default_factory=list,
+        description="Every variable name the document actually references",
+    )
+
+
+class RenderVideoResult(BaseModel):
+    """Result of a video template render (``render_video``)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    url: str = Field(..., description="Hosted URL of the finished file")
+    duration_in_frames: Optional[int] = Field(
+        default=None, alias="durationInFrames", description="Video length in frames"
+    )
+    format: Optional[str] = Field(
+        default=None, description='What was actually produced: "mp4" or "gif"'
+    )
+
+
+class GenerateVideoTemplateResult(BaseModel):
+    """Result of AI video template generation (``generate_video_template``)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    template: VideoTemplate = Field(..., description="The generated draft template")
+    preview_url: Optional[str] = Field(
+        default=None, alias="previewUrl", description="A rendered preview frame of the scene"
     )
 
 

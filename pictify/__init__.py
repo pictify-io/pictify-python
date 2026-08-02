@@ -27,6 +27,7 @@ from pictify.types import (
     BatchItemStatus,
     BatchRenderResult,
     BatchResults,
+    GenerateVideoTemplateResult,
     GifQuality,
     GifRenderResult,
     ImageFormat,
@@ -36,8 +37,12 @@ from pictify.types import (
     RenderErrorEntry,
     RenderResult,
     RenderResultItem,
+    RenderVideoResult,
     Template,
     TemplateVariableDefinition,
+    VideoFormat,
+    VideoTemplate,
+    VideoTemplateVariables,
 )
 
 __version__ = "1.0.0"
@@ -60,6 +65,11 @@ __all__ = [
     "TemplateVariableDefinition",
     "Pagination",
     "ListTemplatesResult",
+    "VideoFormat",
+    "VideoTemplate",
+    "VideoTemplateVariables",
+    "RenderVideoResult",
+    "GenerateVideoTemplateResult",
     # Errors
     "PictifyError",
     "AuthenticationError",

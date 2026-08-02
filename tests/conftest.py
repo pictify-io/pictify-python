@@ -162,6 +162,73 @@ def mock_list_templates_result(mock_template):
 
 
 @pytest.fixture
+def mock_video_template():
+    """Mock video template object (as nested under the `template` envelope)."""
+    return {
+        "uid": "vid_abc123",
+        "name": "Promo",
+        "kind": "tsx",
+        "width": 1080,
+        "height": 1080,
+        "fps": 30,
+        "durationInFrames": 240,
+        "posterUrl": "https://media.pictify.io/posters/vid_abc123.png",
+        "status": "draft",
+        "variableDefinitions": [
+            {"name": "title", "type": "string", "defaultValue": "Hello"},
+        ],
+        "createdAt": "2026-08-02T10:30:00Z",
+        "updatedAt": "2026-08-02T10:30:00Z",
+    }
+
+
+@pytest.fixture
+def mock_video_template_envelope(mock_video_template):
+    """Mock `POST /video/templates` response."""
+    return {"template": mock_video_template}
+
+
+@pytest.fixture
+def mock_list_video_templates_result(mock_video_template):
+    """Mock `GET /video/templates` response."""
+    return {"templates": [mock_video_template]}
+
+
+@pytest.fixture
+def mock_video_variables_result():
+    """Mock `GET /video/templates/:uid/variables` response."""
+    return {
+        "templateUid": "vid_abc123",
+        "templateName": "Promo",
+        "kind": "tsx",
+        "variables": [
+            {"name": "title", "type": "string", "defaultValue": "Hello"},
+            {"name": "accent", "type": "color", "defaultValue": "#ff5500"},
+        ],
+        "referenced": ["title", "accent"],
+    }
+
+
+@pytest.fixture
+def mock_render_video_result():
+    """Mock `POST /video/templates/:uid/render` response."""
+    return {
+        "url": "https://media.pictify.io/videos/abc123.mp4",
+        "durationInFrames": 240,
+        "format": "mp4",
+    }
+
+
+@pytest.fixture
+def mock_generate_video_result(mock_video_template):
+    """Mock `POST /video/templates/generate` response."""
+    return {
+        "template": mock_video_template,
+        "previewUrl": "https://media.pictify.io/previews/vid_abc123.png",
+    }
+
+
+@pytest.fixture
 def respx_mock():
     """Create a respx mock context."""
     with respx.mock:
